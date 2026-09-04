@@ -1,3 +1,4 @@
+
 package com.appsense.app
 
 import android.app.Notification
@@ -21,6 +22,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.content.pm.ServiceInfo
+import java.util.Calendar
 import kotlin.math.max
 import kotlin.math.min
 
@@ -32,7 +34,6 @@ class UsageMonitorService : Service() {
 
         private const val POLL_INTERVAL = 1000L
 
-        private const val BOX_WIDTH_DP = 118
         private const val BOX_HEIGHT_DP = 36
         private const val EDGE_MARGIN_DP = 6
 
@@ -171,11 +172,24 @@ class UsageMonitorService : Service() {
                 sessionStartTime = System.currentTimeMillis()
             }
 
-            val elapsed =
-                System.currentTimeMillis() -
-                        sessionStartTime
+            val now =
+                System.currentTimeMillis()
 
-            showFloatingTimer(elapsed)
+            val elapsed =
+                now - sessionStartTime
+
+            // Emoji + color are based on TODAY'S TOTAL usage.
+            // The visible timer remains the current session duration.
+            val todayTotal =
+                getTodayUsage(
+                    foregroundPackage,
+                    now
+                )
+
+            showFloatingTimer(
+                elapsed,
+                todayTotal
+            )
 
         } else {
 
@@ -265,9 +279,6 @@ class UsageMonitorService : Service() {
         val density =
             resources.displayMetrics.density
 
-        val width =
-            (BOX_WIDTH_DP * density).toInt()
-
         val height =
             (BOX_HEIGHT_DP * density).toInt()
 
@@ -345,15 +356,14 @@ class UsageMonitorService : Service() {
         container.addView(
             timer,
             LinearLayout.LayoutParams(
-                0,
-                -1,
-                1f
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                -1
             )
         )
 
         val params =
             WindowManager.LayoutParams(
-                width,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 height,
 
                 if (
@@ -377,11 +387,7 @@ class UsageMonitorService : Service() {
                 gravity =
                     Gravity.TOP or Gravity.START
 
-                x =
-                    resources.displayMetrics
-                        .widthPixels -
-                            width -
-                            edgeMargin
+                x = edgeMargin
 
                 y =
                     resources.displayMetrics
@@ -421,8 +427,14 @@ class UsageMonitorService : Service() {
                         resources.displayMetrics.heightPixels
 
                     val minX = edgeMargin
+                    val currentWidth =
+                        view.width.takeIf { it > 0 } ?: 0
+
                     val maxX =
-                        screenWidth - width - edgeMargin
+                        max(
+                            edgeMargin,
+                            screenWidth - currentWidth - edgeMargin
+                        )
 
                     val minY = edgeMargin
                     val maxY =
@@ -485,7 +497,8 @@ class UsageMonitorService : Service() {
     }
 
     private fun showFloatingTimer(
-        elapsed: Long
+        elapsed: Long,
+        todayTotal: Long
     ) {
 
         val view =
@@ -504,10 +517,10 @@ class UsageMonitorService : Service() {
 
         val timerColor =
             when {
-                elapsed < YELLOW_AFTER_MS ->
+                todayTotal < YELLOW_AFTER_MS ->
                     Color.WHITE
 
-                elapsed < RED_AFTER_MS ->
+                todayTotal < RED_AFTER_MS ->
                     Color.YELLOW
 
                 else ->
@@ -516,10 +529,10 @@ class UsageMonitorService : Service() {
 
         val emojiText =
             when {
-                elapsed < YELLOW_AFTER_MS ->
+                todayTotal < YELLOW_AFTER_MS ->
                     "🙂"
 
-                elapsed < RED_AFTER_MS ->
+                todayTotal < RED_AFTER_MS ->
                     "😐"
 
                 else ->
@@ -552,6 +565,98 @@ class UsageMonitorService : Service() {
             view.visibility =
                 View.GONE
         }
+    }
+
+    private fun getTodayUsage(
+        packageName: String,
+        now: Long
+    ): Long {
+
+        val calendar =
+            Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+
+        val dayStart =
+            calendar.timeInMillis
+
+        val usageStatsManager =
+            getSystemService(
+                Context.USAGE_STATS_SERVICE
+            ) as UsageStatsManager
+
+        val events =
+            usageStatsManager.queryEvents(
+                dayStart,
+                now
+            )
+
+        val event =
+            UsageEvents.Event()
+
+        var isForeground = false
+        var sessionStart = 0L
+        var total = 0L
+
+        while (events.hasNextEvent()) {
+
+            events.getNextEvent(event)
+
+            if (event.packageName != packageName) {
+                continue
+            }
+
+            when (event.eventType) {
+
+                UsageEvents.Event.MOVE_TO_FOREGROUND,
+                UsageEvents.Event.ACTIVITY_RESUMED -> {
+
+                    if (!isForeground) {
+                        isForeground = true
+                        sessionStart = event.timeStamp
+                    }
+                }
+
+                UsageEvents.Event.MOVE_TO_BACKGROUND,
+                UsageEvents.Event.ACTIVITY_PAUSED -> {
+
+                    if (isForeground) {
+
+                        val sessionEnd =
+                            event.timeStamp
+
+                        val start =
+                            max(sessionStart, dayStart)
+
+                        val end =
+                            min(sessionEnd, now)
+
+                        if (end > start) {
+                            total += end - start
+                        }
+
+                        isForeground = false
+                        sessionStart = 0L
+                    }
+                }
+            }
+        }
+
+        // Include the currently open session up to "now".
+        if (isForeground && sessionStart > 0L) {
+
+            val start =
+                max(sessionStart, dayStart)
+
+            if (now > start) {
+                total += now - start
+            }
+        }
+
+        return max(0L, total)
     }
 
     private fun formatDuration(
