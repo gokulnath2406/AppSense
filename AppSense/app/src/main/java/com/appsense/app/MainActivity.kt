@@ -721,6 +721,27 @@ fun AppSenseApp() {
     }
 
     /*
+     * Preload the installed-app list in the background while
+     * the dashboard is visible. This means Add Apps can use
+     * the already-built cache immediately instead of waiting
+     * 2-3 seconds for PackageManager to query every app.
+     */
+    LaunchedEffect(
+        permissionGranted,
+        overlayPermissionGranted
+    ) {
+        if (
+            permissionGranted &&
+            overlayPermissionGranted &&
+            installedAppsCache == null
+        ) {
+            withContext(Dispatchers.IO) {
+                getInstalledApps(context)
+            }
+        }
+    }
+
+    /*
      * Ask for the user's name only after Usage Access
      * permission has been granted, and only if no name
      * has been saved before.
