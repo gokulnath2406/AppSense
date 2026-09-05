@@ -1,4 +1,3 @@
-
 package com.appsense.app
 
 import android.app.Notification
@@ -53,6 +52,16 @@ class UsageMonitorService : Service() {
     private var sessionStartTime = 0L
 
     private var lastForegroundPackage: String? = null
+
+    private var isExpanded = false
+    private var outsideTouchView: View? = null
+
+    // Cached expanded-view children.
+    // They are created once and reused to avoid rebuilding the UI
+    // every time the floating timer is expanded/collapsed.
+    private var expandedEmojiView: TextView? = null
+    private var expandedTodayView: TextView? = null
+    private var expandedCurrentView: TextView? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -195,6 +204,11 @@ class UsageMonitorService : Service() {
 
             currentPackage = null
             sessionStartTime = 0L
+
+            if (isExpanded) {
+                collapseFloatingTimer()
+            }
+
             hideFloatingTimer()
         }
     }
@@ -323,7 +337,6 @@ class UsageMonitorService : Service() {
 
         val emoji =
             TextView(this).apply {
-
                 text = "🙂"
                 textSize = 17f
                 gravity = Gravity.CENTER
@@ -331,17 +344,10 @@ class UsageMonitorService : Service() {
 
         val timer =
             TextView(this).apply {
-
                 text = "0s"
                 textSize = 13f
-
-                setTextColor(
-                    Color.WHITE
-                )
-
-                gravity =
-                    Gravity.CENTER_VERTICAL
-
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER_VERTICAL
                 setSingleLine(true)
             }
 
@@ -365,7 +371,6 @@ class UsageMonitorService : Service() {
             WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 height,
-
                 if (
                     Build.VERSION.SDK_INT >=
                     Build.VERSION_CODES.O
@@ -377,24 +382,19 @@ class UsageMonitorService : Service() {
                     WindowManager.LayoutParams
                         .TYPE_PHONE
                 },
-
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-
                 PixelFormat.TRANSLUCENT
             ).apply {
 
-                // Start on the right, but remain freely movable.
                 gravity =
                     Gravity.TOP or Gravity.START
 
                 x = edgeMargin
-
                 y =
                     resources.displayMetrics
                         .heightPixels / 3
             }
 
-        // The whole pill can be dragged anywhere on screen.
         var initialTouchX = 0f
         var initialTouchY = 0f
         var initialWindowX = 0
@@ -414,6 +414,11 @@ class UsageMonitorService : Service() {
 
                 MotionEvent.ACTION_MOVE -> {
 
+                    // In expanded mode the card is not draggable.
+                    if (isExpanded) {
+                        return@setOnTouchListener true
+                    }
+
                     val deltaX =
                         (event.rawX - initialTouchX).toInt()
 
@@ -426,19 +431,26 @@ class UsageMonitorService : Service() {
                     val screenHeight =
                         resources.displayMetrics.heightPixels
 
-                    val minX = edgeMargin
                     val currentWidth =
-                        view.width.takeIf { it > 0 } ?: 0
+                        view.width.takeIf { it > 0 } ?: 1
 
+                    val minX = edgeMargin
                     val maxX =
                         max(
                             edgeMargin,
-                            screenWidth - currentWidth - edgeMargin
+                            screenWidth -
+                                    currentWidth -
+                                    edgeMargin
                         )
 
                     val minY = edgeMargin
                     val maxY =
-                        screenHeight - height - edgeMargin
+                        max(
+                            edgeMargin,
+                            screenHeight -
+                                    height -
+                                    edgeMargin
+                        )
 
                     params.x =
                         min(
@@ -469,7 +481,15 @@ class UsageMonitorService : Service() {
                     true
                 }
 
-                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_UP -> {
+
+                    if (!isExpanded) {
+                        expandFloatingTimer()
+                    }
+
+                    true
+                }
+
                 MotionEvent.ACTION_CANCEL -> true
 
                 else -> false
@@ -494,6 +514,338 @@ class UsageMonitorService : Service() {
             overlayView = null
             overlayParams = null
         }
+    }
+
+    private fun expandFloatingTimer() {
+
+        val view =
+            overlayView ?: return
+
+        val params =
+            overlayParams ?: return
+
+        if (isExpanded) return
+
+        isExpanded = true
+
+        val density =
+            resources.displayMetrics.density
+
+        val edgeMargin =
+            (EDGE_MARGIN_DP * density).toInt()
+
+        val oldWidth =
+            view.width
+
+        val oldHeight =
+            view.height
+
+        val expandedWidth =
+            max(
+                oldWidth * 2,
+                (210 * density).toInt()
+            )
+
+        val expandedHeight =
+            max(
+                oldHeight * 2,
+                (96 * density).toInt()
+            )
+
+        // The expanded card uses three compact rows:
+        // emoji, today's total, current session.
+        // Create them only once and reuse them.
+        val emoji =
+            expandedEmojiView
+                ?: TextView(this).apply {
+                    text = "🙂"
+                    textSize = 23f
+                    gravity = Gravity.CENTER
+                    includeFontPadding = true
+                    setSingleLine(true)
+                }.also {
+                    expandedEmojiView = it
+                }
+
+        val today =
+            expandedTodayView
+                ?: TextView(this).apply {
+                    text = "Today: 0m"
+                    textSize = 13f
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                    includeFontPadding = false
+                    setSingleLine(true)
+                }.also {
+                    expandedTodayView = it
+                }
+
+        val current =
+            expandedCurrentView
+                ?: TextView(this).apply {
+                    text = "Current: 0s"
+                    textSize = 12f
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                    includeFontPadding = false
+                    setSingleLine(true)
+                }.also {
+                    expandedCurrentView = it
+                }
+
+        view.removeAllViews()
+
+        view.orientation =
+            LinearLayout.VERTICAL
+
+        view.gravity =
+            Gravity.CENTER
+
+        view.setPadding(
+            (10 * density).toInt(),
+            (5 * density).toInt(),
+            (10 * density).toInt(),
+            (5 * density).toInt()
+        )
+
+        view.addView(
+            emoji,
+            LinearLayout.LayoutParams(
+                -1,
+                0,
+                1f
+            )
+        )
+
+        view.addView(
+            today,
+            LinearLayout.LayoutParams(
+                -1,
+                0,
+                1f
+            )
+        )
+
+        view.addView(
+            current,
+            LinearLayout.LayoutParams(
+                -1,
+                0,
+                1f
+            )
+        )
+
+        params.width = expandedWidth
+        params.height = expandedHeight
+
+        val screenWidth =
+            resources.displayMetrics.widthPixels
+
+        val screenHeight =
+            resources.displayMetrics.heightPixels
+
+        params.x =
+            min(
+                max(
+                    params.x -
+                            (expandedWidth - oldWidth) / 2,
+                    edgeMargin
+                ),
+                max(
+                    edgeMargin,
+                    screenWidth -
+                            expandedWidth -
+                            edgeMargin
+                )
+            )
+
+        params.y =
+            min(
+                max(
+                    params.y -
+                            (expandedHeight - oldHeight) / 2,
+                    edgeMargin
+                ),
+                max(
+                    edgeMargin,
+                    screenHeight -
+                            expandedHeight -
+                            edgeMargin
+                )
+            )
+
+        try {
+            windowManager.updateViewLayout(
+                view,
+                params
+            )
+        } catch (_: Exception) {
+        }
+
+        createOutsideTouchLayer()
+    }
+
+    private fun collapseFloatingTimer() {
+
+        val view =
+            overlayView ?: return
+
+        val params =
+            overlayParams ?: return
+
+        if (!isExpanded) return
+
+        isExpanded = false
+
+        val density =
+            resources.displayMetrics.density
+
+        view.removeAllViews()
+
+        val emoji =
+            TextView(this).apply {
+                text = "🙂"
+                textSize = 17f
+                gravity = Gravity.CENTER
+            }
+
+        val timer =
+            TextView(this).apply {
+                text = "0s"
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER_VERTICAL
+                setSingleLine(true)
+            }
+
+        view.orientation =
+            LinearLayout.HORIZONTAL
+
+        view.gravity =
+            Gravity.CENTER_VERTICAL
+
+        view.setPadding(
+            (8 * density).toInt(),
+            0,
+            (8 * density).toInt(),
+            0
+        )
+
+        view.addView(
+            emoji,
+            LinearLayout.LayoutParams(
+                (30 * density).toInt(),
+                -1
+            )
+        )
+
+        view.addView(
+            timer,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                -1
+            )
+        )
+
+        params.width =
+            WindowManager.LayoutParams.WRAP_CONTENT
+
+        params.height =
+            (BOX_HEIGHT_DP * density).toInt()
+
+        try {
+            windowManager.updateViewLayout(
+                view,
+                params
+            )
+        } catch (_: Exception) {
+        }
+
+        removeOutsideTouchLayer()
+    }
+
+    private fun createOutsideTouchLayer() {
+
+        if (outsideTouchView != null) return
+
+        val layer =
+            View(this).apply {
+
+                setBackgroundColor(Color.TRANSPARENT)
+
+                setOnTouchListener { _, event ->
+
+                    if (
+                        event.actionMasked ==
+                        MotionEvent.ACTION_DOWN
+                    ) {
+                        collapseFloatingTimer()
+                        true
+                    } else {
+                        true
+                    }
+                }
+            }
+
+        val type =
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.O
+            ) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+
+        val layerParams =
+            WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity =
+                    Gravity.TOP or Gravity.START
+            }
+
+        try {
+
+            windowManager.addView(
+                layer,
+                layerParams
+            )
+
+            outsideTouchView = layer
+
+            // Put the expanded card above the transparent
+            // outside-touch layer.
+            overlayView?.let { pill ->
+                windowManager.removeView(pill)
+                windowManager.addView(
+                    pill,
+                    overlayParams
+                )
+            }
+
+        } catch (_: Exception) {
+
+            outsideTouchView = null
+        }
+    }
+
+    private fun removeOutsideTouchLayer() {
+
+        outsideTouchView?.let { layer ->
+
+            try {
+                windowManager.removeView(layer)
+            } catch (_: Exception) {
+            }
+        }
+
+        outsideTouchView = null
     }
 
     private fun showFloatingTimer(
@@ -541,15 +893,45 @@ class UsageMonitorService : Service() {
 
         view.post {
 
-            timer?.text =
-                timerText
+            if (isExpanded) {
 
-            timer?.setTextColor(
-                timerColor
-            )
+                val todayView =
+                    view.getChildAt(1)
+                            as? TextView
 
-            emoji?.text =
-                emojiText
+                val currentView =
+                    view.getChildAt(2)
+                            as? TextView
+
+                emoji?.text =
+                    emojiText
+
+                todayView?.text =
+                    "Today: ${formatDuration(todayTotal)}"
+
+                currentView?.text =
+                    "Current: $timerText"
+
+                todayView?.setTextColor(
+                    timerColor
+                )
+
+                currentView?.setTextColor(
+                    timerColor
+                )
+
+            } else {
+
+                timer?.text =
+                    timerText
+
+                timer?.setTextColor(
+                    timerColor
+                )
+
+                emoji?.text =
+                    emojiText
+            }
 
             view.visibility =
                 View.VISIBLE
@@ -766,6 +1148,9 @@ class UsageMonitorService : Service() {
         monitoringThread?.interrupt()
         monitoringThread = null
 
+        removeOutsideTouchLayer()
+        isExpanded = false
+
         val view = overlayView
 
         if (view != null) {
@@ -781,6 +1166,10 @@ class UsageMonitorService : Service() {
         overlayView = null
         overlayParams = null
 
+        expandedEmojiView = null
+        expandedTodayView = null
+        expandedCurrentView = null
+
         super.onDestroy()
     }
 
@@ -790,3 +1179,4 @@ class UsageMonitorService : Service() {
         return null
     }
 }
+
