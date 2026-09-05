@@ -1,3 +1,4 @@
+
 package com.appsense.app
 
 import android.app.Notification
@@ -70,7 +71,10 @@ class UsageMonitorService : Service() {
 
         val notification = createNotification()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        ) {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
@@ -140,7 +144,7 @@ class UsageMonitorService : Service() {
         }
 
         val powerManager =
-            getSystemService(Context.POWER_SERVICE) as PowerManager
+            getSystemService(POWER_SERVICE) as PowerManager
 
         if (!powerManager.isInteractive) {
             currentPackage = null
@@ -152,7 +156,7 @@ class UsageMonitorService : Service() {
         val selectedApps =
             getSharedPreferences(
                 "appsense_preferences",
-                Context.MODE_PRIVATE
+                MODE_PRIVATE
             )
                 .getStringSet(
                     "tracked_apps",
@@ -217,7 +221,7 @@ class UsageMonitorService : Service() {
 
         val usageStatsManager =
             getSystemService(
-                Context.USAGE_STATS_SERVICE
+                USAGE_STATS_SERVICE
             ) as UsageStatsManager
 
         val endTime =
@@ -967,7 +971,7 @@ class UsageMonitorService : Service() {
 
         val usageStatsManager =
             getSystemService(
-                Context.USAGE_STATS_SERVICE
+                USAGE_STATS_SERVICE
             ) as UsageStatsManager
 
         val events =
@@ -1179,4 +1183,3 @@ class UsageMonitorService : Service() {
         return null
     }
 }
-
