@@ -1,18 +1,16 @@
-
-
 package com.appsense.app
 
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.IconButton
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -31,37 +29,40 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.appsense.app.ui.theme.AppSenseTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import androidx.compose.ui.window.Dialog
-import androidx.compose.material3.Surface
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsControllerCompat
-import androidx.core.content.ContextCompat
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import android.content.BroadcastReceiver
-import android.content.IntentFilter
 
 data class AppItem(
     val name: String,
@@ -117,16 +118,20 @@ private fun hasUsageAccess(context: Context): Boolean {
             Context.APP_OPS_SERVICE
         ) as AppOpsManager
 
-    val mode = appOps.unsafeCheckOpNoThrow(
-        AppOpsManager.OPSTR_GET_USAGE_STATS,
-        android.os.Process.myUid(),
-        context.packageName
-    )
+    val mode =
+        appOps.unsafeCheckOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            android.os.Process.myUid(),
+            context.packageName
+        )
 
     return mode == AppOpsManager.MODE_ALLOWED
 }
 
-private fun hasOverlayPermission(context: Context): Boolean {
+private fun hasOverlayPermission(
+    context: Context
+): Boolean {
+
     return Settings.canDrawOverlays(context)
 }
 
@@ -134,13 +139,17 @@ private fun hasOverlayPermission(context: Context): Boolean {
    INSTALLED APPS
    SYSTEM APPS INCLUDED
    ========================================================= */
-private var installedAppsCache: List<AppItem>? = null
+
+private var installedAppsCache:
+        List<AppItem>? = null
+
 private fun getInstalledApps(
     context: Context,
     forceRefresh: Boolean = false
 ): List<AppItem> {
 
     if (!forceRefresh) {
+
         installedAppsCache?.let {
             return it
         }
@@ -151,35 +160,52 @@ private fun getInstalledApps(
 
     val intent =
         Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-        }
-
-    val apps = packageManager
-        .queryIntentActivities(intent, 0)
-        .mapNotNull { resolveInfo ->
-
-            val packageName =
-                resolveInfo.activityInfo.packageName
-
-            if (packageName == context.packageName) {
-                return@mapNotNull null
-            }
-
-            AppItem(
-                name = resolveInfo
-                    .loadLabel(packageManager)
-                    .toString(),
-                packageName = packageName
+            addCategory(
+                Intent.CATEGORY_LAUNCHER
             )
         }
-        .distinctBy {
-            it.packageName
-        }
-        .sortedBy {
-            it.name.lowercase()
-        }
 
-    installedAppsCache = apps
+    val apps =
+        packageManager
+            .queryIntentActivities(
+                intent,
+                0
+            )
+            .mapNotNull { resolveInfo ->
+
+                val packageName =
+                    resolveInfo
+                        .activityInfo
+                        .packageName
+
+                if (
+                    packageName ==
+                    context.packageName
+                ) {
+                    return@mapNotNull null
+                }
+
+                AppItem(
+                    name =
+                        resolveInfo
+                            .loadLabel(
+                                packageManager
+                            )
+                            .toString(),
+
+                    packageName =
+                        packageName
+                )
+            }
+            .distinctBy {
+                it.packageName
+            }
+            .sortedBy {
+                it.name.lowercase()
+            }
+
+    installedAppsCache =
+        apps
 
     return apps
 }
@@ -233,8 +259,11 @@ private fun foregroundEvent(): Int {
         Build.VERSION.SDK_INT >=
         Build.VERSION_CODES.Q
     ) {
+
         UsageEvents.Event.ACTIVITY_RESUMED
+
     } else {
+
         UsageEvents.Event.MOVE_TO_FOREGROUND
     }
 }
@@ -245,8 +274,11 @@ private fun backgroundEvent(): Int {
         Build.VERSION.SDK_INT >=
         Build.VERSION_CODES.Q
     ) {
+
         UsageEvents.Event.ACTIVITY_PAUSED
+
     } else {
+
         UsageEvents.Event.MOVE_TO_BACKGROUND
     }
 }
@@ -315,9 +347,14 @@ private fun getUsageSessions(
         System.currentTimeMillis()
 
     val queryEnd =
-        minOf(dayEnd, now)
+        minOf(
+            dayEnd,
+            now
+        )
 
-    if (queryEnd <= dayStart) {
+    if (
+        queryEnd <= dayStart
+    ) {
         return emptyList()
     }
 
@@ -338,27 +375,31 @@ private fun getUsageSessions(
     val sessions =
         mutableListOf<UsageSession>()
 
-    var openTime: Long? = null
+    var openTime:
+            Long? = null
 
-    while (events.hasNextEvent()) {
+    while (
+        events.hasNextEvent()
+    ) {
 
         events.getNextEvent(event)
 
         if (
-            event.packageName != packageName
+            event.packageName !=
+            packageName
         ) {
             continue
         }
 
-        when (event.eventType) {
+        when (
+            event.eventType
+        ) {
 
             foregroundEvent() -> {
 
-                /*
-                 * Start a new session only if
-                 * there isn't already an open one.
-                 */
-                if (openTime == null) {
+                if (
+                    openTime == null
+                ) {
 
                     openTime =
                         event.timeStamp
@@ -388,7 +429,8 @@ private fun getUsageSessions(
                         )
 
                     if (
-                        actualEnd > actualStart
+                        actualEnd >
+                        actualStart
                     ) {
 
                         sessions.add(
@@ -406,17 +448,16 @@ private fun getUsageSessions(
                         )
                     }
 
-                    openTime = null
+                    openTime =
+                        null
                 }
             }
         }
     }
 
-    /*
-     * If the selected app is currently open,
-     * close the session at NOW.
-     */
-    if (openTime != null) {
+    if (
+        openTime != null
+    ) {
 
         val actualStart =
             maxOf(
@@ -427,7 +468,10 @@ private fun getUsageSessions(
         val actualEnd =
             queryEnd
 
-        if (actualEnd > actualStart) {
+        if (
+            actualEnd >
+            actualStart
+        ) {
 
             sessions.add(
                 UsageSession(
@@ -460,13 +504,18 @@ private fun getAppUsageForDate(
     date: Calendar
 ): Long {
 
-    val dayStart = getDayStart(date)
-    val dayEnd = minOf(
-        getDayEnd(date),
-        System.currentTimeMillis()
-    )
+    val dayStart =
+        getDayStart(date)
 
-    if (dayEnd <= dayStart) {
+    val dayEnd =
+        minOf(
+            getDayEnd(date),
+            System.currentTimeMillis()
+        )
+
+    if (
+        dayEnd <= dayStart
+    ) {
         return 0L
     }
 
@@ -475,107 +524,141 @@ private fun getAppUsageForDate(
             Context.USAGE_STATS_SERVICE
         ) as UsageStatsManager
 
-    // Previous day events are needed only to know
-    // whether an Activity was already active at midnight.
     val queryStart =
-        dayStart - (24L * 60L * 60L * 1000L)
+        dayStart -
+                (
+                        24L *
+                                60L *
+                                60L *
+                                1000L
+                        )
 
-    val events = usageManager.queryEvents(
-        queryStart,
-        dayEnd
-    )
+    val events =
+        usageManager.queryEvents(
+            queryStart,
+            dayEnd
+        )
 
-    val event = UsageEvents.Event()
+    val event =
+        UsageEvents.Event()
 
-    // Track actual Activity names instead of simply counting
-    // RESUMED events.
-    val activeActivities = mutableSetOf<String>()
+    val activeActivities =
+        mutableSetOf<String>()
 
-    var sessionStart: Long? = null
-    var totalUsage = 0L
+    var sessionStart:
+            Long? = null
 
-    while (events.hasNextEvent()) {
+    var totalUsage =
+        0L
+
+    while (
+        events.hasNextEvent()
+    ) {
 
         events.getNextEvent(event)
 
-        if (event.packageName != packageName) {
+        if (
+            event.packageName !=
+            packageName
+        ) {
             continue
         }
 
         val activityName =
-            event.className ?: "__unknown_activity__"
+            event.className ?: ""
 
-        when (event.eventType) {
+        when (
+            event.eventType
+        ) {
 
             foregroundEvent() -> {
 
-                val wasEmpty = activeActivities.isEmpty()
+                val wasEmpty =
+                    activeActivities.isEmpty()
 
-                activeActivities.add(activityName)
+                activeActivities.add(
+                    activityName
+                )
 
-                // App became active.
                 if (
                     wasEmpty &&
-                    event.timeStamp >= dayStart
+                    event.timeStamp >=
+                    dayStart
                 ) {
-                    sessionStart = event.timeStamp
+
+                    sessionStart =
+                        event.timeStamp
                 }
             }
 
             backgroundEvent() -> {
 
-                activeActivities.remove(activityName)
+                activeActivities.remove(
+                    activityName
+                )
 
-                // App completely left foreground.
                 if (
                     activeActivities.isEmpty() &&
                     sessionStart != null
                 ) {
 
-                    val start = maxOf(
-                        sessionStart!!,
-                        dayStart
-                    )
+                    val start =
+                        maxOf(
+                            sessionStart!!,
+                            dayStart
+                        )
 
-                    val end = minOf(
-                        event.timeStamp,
-                        dayEnd
-                    )
+                    val end =
+                        minOf(
+                            event.timeStamp,
+                            dayEnd
+                        )
 
-                    if (end > start) {
-                        totalUsage += end - start
+                    if (
+                        end > start
+                    ) {
+
+                        totalUsage +=
+                            end - start
                     }
 
-                    sessionStart = null
+                    sessionStart =
+                        null
                 }
             }
         }
 
-        // If the app was already active before midnight,
-        // start counting from midnight.
         if (
-            event.timeStamp < dayStart &&
+            event.timeStamp <
+            dayStart &&
             activeActivities.isNotEmpty()
         ) {
-            sessionStart = dayStart
+
+            sessionStart =
+                dayStart
         }
     }
 
-    // App is still active now.
     if (
         activeActivities.isNotEmpty() &&
         sessionStart != null
     ) {
 
-        val start = maxOf(
-            sessionStart!!,
-            dayStart
-        )
+        val start =
+            maxOf(
+                sessionStart!!,
+                dayStart
+            )
 
-        val end = dayEnd
+        val end =
+            dayEnd
 
-        if (end > start) {
-            totalUsage += end - start
+        if (
+            end > start
+        ) {
+
+            totalUsage +=
+                end - start
         }
     }
 
@@ -614,7 +697,9 @@ private fun formatUsageTime(
         totalSeconds / 3600
 
     val minutes =
-        (totalSeconds % 3600) / 60
+        (
+                totalSeconds % 3600
+                ) / 60
 
     val seconds =
         totalSeconds % 60
@@ -656,7 +741,8 @@ private fun formatClockTime(
 fun AppSenseApp() {
 
     val context =
-        androidx.compose.ui.platform.LocalContext.current
+        androidx.compose.ui.platform
+            .LocalContext.current
 
     var permissionGranted by remember {
         mutableStateOf(
@@ -676,6 +762,16 @@ fun AppSenseApp() {
 
     var userName by remember {
         mutableStateOf("")
+    }
+
+    // Splash is shown only after the required
+    // permissions are available.
+    var showSplash by remember {
+        mutableStateOf(false)
+    }
+
+    var splashHandled by remember {
+        mutableStateOf(false)
     }
 
     var currentScreen by remember {
@@ -707,7 +803,9 @@ fun AppSenseApp() {
                         hasUsageAccess(context)
 
                     overlayPermissionGranted =
-                        hasOverlayPermission(context)
+                        hasOverlayPermission(
+                            context
+                        )
                 }
             }
 
@@ -715,46 +813,60 @@ fun AppSenseApp() {
             .addObserver(observer)
 
         onDispose {
+
             lifecycleOwner.lifecycle
                 .removeObserver(observer)
         }
     }
 
     /*
-     * Preload the installed-app list in the background while
-     * the dashboard is visible. This means Add Apps can use
-     * the already-built cache immediately instead of waiting
-     * 2-3 seconds for PackageManager to query every app.
+     * Splash flow:
+     *
+     * Usage Access
+     *      ↓
+     * Display over other apps
+     *      ↓
+     * AppSense splash
+     *      ↓
+     * Name dialog (first setup only)
+     *      ↓
+     * Dashboard
+     *
+     * Existing permissions and onboarding are preserved.
      */
     LaunchedEffect(
         permissionGranted,
         overlayPermissionGranted
     ) {
+
         if (
             permissionGranted &&
             overlayPermissionGranted &&
-            installedAppsCache == null
+            !splashHandled
         ) {
-            withContext(Dispatchers.IO) {
-                getInstalledApps(context)
+
+            splashHandled = true
+            showSplash = true
+
+            // Start the existing floating-timer monitor while
+            // the splash is showing, so it is ready when the
+            // dashboard/app usage flow begins.
+            val serviceIntent =
+                Intent(
+                    context,
+                    UsageMonitorService::class.java
+                )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
             }
-        }
-    }
 
-    /*
-     * Ask for the user's name only after Usage Access
-     * permission has been granted, and only if no name
-     * has been saved before.
-     */
-    LaunchedEffect(
-        permissionGranted,
-        overlayPermissionGranted
-    ) {
+            // Keep the splash short and smooth.
+            delay(1800L)
 
-        if (
-            permissionGranted &&
-            overlayPermissionGranted
-        ) {
+            showSplash = false
 
             val savedName =
                 context
@@ -767,8 +879,37 @@ fun AppSenseApp() {
                         null
                     )
 
-            if (savedName.isNullOrBlank()) {
+            if (
+                savedName.isNullOrBlank()
+            ) {
+
                 showNameDialog = true
+            }
+        }
+    }
+
+    /*
+     * Preload installed apps while the splash/dashboard
+     * flow is running, so Add Apps remains fast.
+     */
+    LaunchedEffect(
+        permissionGranted,
+        overlayPermissionGranted
+    ) {
+
+        if (
+            permissionGranted &&
+            overlayPermissionGranted &&
+            installedAppsCache == null
+        ) {
+
+            withContext(
+                Dispatchers.IO
+            ) {
+
+                getInstalledApps(
+                    context
+                )
             }
         }
     }
@@ -795,36 +936,30 @@ fun AppSenseApp() {
         OverlayPermissionScreen(
             onGrantPermission = {
 
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse(
-                        "package:${context.packageName}"
-                    )
-                )
+                val intent =
+                    Intent(
+                        Settings
+                            .ACTION_MANAGE_OVERLAY_PERMISSION,
 
-                context.startActivity(intent)
+                        Uri.parse(
+                            "package:${context.packageName}"
+                        )
+                    )
+
+                context.startActivity(
+                    intent
+                )
             }
         )
 
         return
     }
 
-    /*
-     * Start the floating timer monitor only after both
-     * required permissions are available.
-     */
-    LaunchedEffect(permissionGranted, overlayPermissionGranted) {
-        if (permissionGranted && overlayPermissionGranted) {
-            val serviceIntent = Intent(
-                context,
-                UsageMonitorService::class.java
-            )
+    if (showSplash) {
 
-            ContextCompat.startForegroundService(
-                context,
-                serviceIntent
-            )
-        }
+        AppSenseSplashScreen()
+
+        return
     }
 
     if (showNameDialog) {
@@ -835,17 +970,21 @@ fun AppSenseApp() {
             },
 
             title = {
-                Text("Enter your name:")
+                Text(
+                    "Enter your name:"
+                )
             },
 
             text = {
+
                 Column {
 
                     OutlinedTextField(
                         modifier =
                             Modifier.fillMaxWidth(),
 
-                        value = userName,
+                        value =
+                            userName,
 
                         onValueChange = {
                             userName = it
@@ -854,7 +993,9 @@ fun AppSenseApp() {
                         singleLine = true,
 
                         placeholder = {
-                            Text("Your name")
+                            Text(
+                                "Your name"
+                            )
                         }
                     )
 
@@ -868,7 +1009,8 @@ fun AppSenseApp() {
                             "This name is not editable. Enter carefully.",
 
                         style =
-                            MaterialTheme.typography
+                            MaterialTheme
+                                .typography
                                 .bodySmall
                     )
                 }
@@ -878,7 +1020,9 @@ fun AppSenseApp() {
 
                 TextButton(
                     enabled =
-                        userName.trim().isNotEmpty(),
+                        userName
+                            .trim()
+                            .isNotEmpty(),
 
                     onClick = {
 
@@ -894,44 +1038,62 @@ fun AppSenseApp() {
                             )
                             .apply()
 
-                        showNameDialog = false
+                        showNameDialog =
+                            false
                     }
                 ) {
-                    Text("Continue")
+
+                    Text(
+                        "Continue"
+                    )
                 }
             }
         )
     }
 
-    androidx.activity.compose.BackHandler(
-        enabled = currentScreen != "dashboard"
-    ) {
-        when (currentScreen) {
+    androidx.activity.compose
+        .BackHandler(
+            enabled =
+                currentScreen !=
+                        "dashboard"
+        ) {
 
-            "detail" -> {
-                currentScreen = "stats"
-            }
+            when (
+                currentScreen
+            ) {
 
-            "stats" -> {
-                currentScreen = "dashboard"
-            }
+                "detail" -> {
+                    currentScreen =
+                        "stats"
+                }
 
-            "add_app" -> {
-                currentScreen = "dashboard"
+                "stats" -> {
+                    currentScreen =
+                        "dashboard"
+                }
+
+                "add_app" -> {
+                    currentScreen =
+                        "dashboard"
+                }
             }
         }
-    }
-    when (currentScreen) {
+
+    when (
+        currentScreen
+    ) {
 
         "dashboard" -> {
 
             DashboardScreen(
                 onAddApp = {
-                    currentScreen = "add_app"
+                    currentScreen =
+                        "add_app"
                 },
 
                 onStats = {
-                    currentScreen = "stats"
+                    currentScreen =
+                        "stats"
                 }
             )
         }
@@ -939,7 +1101,8 @@ fun AppSenseApp() {
         "add_app" -> {
 
             AddAppScreen(
-                context = context,
+                context =
+                    context,
 
                 onBack = {
                     currentScreen =
@@ -956,14 +1119,16 @@ fun AppSenseApp() {
         "stats" -> {
 
             AddedAppStatsScreen(
-                context = context,
+                context =
+                    context,
 
                 onBack = {
                     currentScreen =
                         "dashboard"
                 },
 
-                onAppClick = { packageName ->
+                onAppClick = {
+                        packageName ->
 
                     detailPackage =
                         packageName
@@ -979,8 +1144,11 @@ fun AppSenseApp() {
             detailPackage?.let {
 
                 AppDetailScreen(
-                    context = context,
-                    packageName = it,
+                    context =
+                        context,
+
+                    packageName =
+                        it,
 
                     onBack = {
                         currentScreen =
@@ -989,6 +1157,41 @@ fun AppSenseApp() {
                 )
             }
         }
+    }
+}
+
+/* =========================================================
+   SPLASH SCREEN
+   ========================================================= */
+
+@Composable
+private fun AppSenseSplashScreen() {
+
+    Box(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Color.Black
+                )
+    ) {
+
+        androidx.compose.foundation.Image(
+            painter =
+                painterResource(
+                    id =
+                        R.drawable.appsense_splash
+                ),
+
+            contentDescription =
+                "AppSense",
+
+            modifier =
+                Modifier.fillMaxSize(),
+
+            contentScale =
+                ContentScale.Crop
+        )
     }
 }
 
@@ -1040,6 +1243,7 @@ fun PermissionScreen(
             onClick =
                 onGrantPermission
         ) {
+
             Text(
                 "Allow Usage Access"
             )
@@ -1070,7 +1274,9 @@ fun OverlayPermissionScreen(
     ) {
 
         Text(
-            text = "Display over other apps",
+            text =
+                "Display over other apps",
+
             style =
                 MaterialTheme.typography
                     .headlineLarge
@@ -1095,6 +1301,7 @@ fun OverlayPermissionScreen(
             onClick =
                 onGrantPermission
         ) {
+
             Text(
                 "Allow Display Access"
             )
@@ -1113,13 +1320,21 @@ fun DashboardScreen(
 ) {
 
     val context =
-        androidx.compose.ui.platform.LocalContext.current
+        androidx.compose.ui.platform
+            .LocalContext.current
 
     val savedName =
-        context.getSharedPreferences(
-            "appsense_preferences",
-            Context.MODE_PRIVATE
-        ).getString("user_name", "")?.trim().orEmpty()
+        context
+            .getSharedPreferences(
+                "appsense_preferences",
+                Context.MODE_PRIVATE
+            )
+            .getString(
+                "user_name",
+                ""
+            )
+            ?.trim()
+            .orEmpty()
 
     Box(
         modifier = Modifier
@@ -1152,11 +1367,17 @@ fun DashboardScreen(
 
             Text(
                 text =
-                    if (savedName.isNotEmpty()) {
+                    if (
+                        savedName.isNotEmpty()
+                    ) {
+
                         "Hello, $savedName! 👋"
+
                     } else {
+
                         "Hello! 👋"
                     },
+
                 style =
                     MaterialTheme.typography
                         .headlineLarge
@@ -1214,6 +1435,7 @@ fun DashboardScreen(
 /* =========================================================
    ADD APP
    ========================================================= */
+
 @Composable
 fun AddAppScreen(
     context: Context,
@@ -1222,34 +1444,37 @@ fun AddAppScreen(
 ) {
 
     var allApps by remember {
-        mutableStateOf<List<AppItem>>(emptyList())
+        mutableStateOf<
+                List<AppItem>
+                >(emptyList())
     }
 
     var refreshKey by remember {
         mutableIntStateOf(0)
     }
 
-    /*
-     * Detect newly installed / uninstalled apps.
-     * Cache is cleared only when the package list changes.
-     */
     DisposableEffect(context) {
 
         val packageReceiver =
-            object : BroadcastReceiver() {
+            object :
+                BroadcastReceiver() {
 
                 override fun onReceive(
                     context: Context?,
                     intent: Intent?
                 ) {
 
-                    when (intent?.action) {
+                    when (
+                        intent?.action
+                    ) {
 
                         Intent.ACTION_PACKAGE_ADDED,
                         Intent.ACTION_PACKAGE_REMOVED,
                         Intent.ACTION_PACKAGE_CHANGED -> {
 
-                            installedAppsCache = null
+                            installedAppsCache =
+                                null
+
                             refreshKey++
                         }
                     }
@@ -1271,7 +1496,9 @@ fun AddAppScreen(
                     Intent.ACTION_PACKAGE_CHANGED
                 )
 
-                addDataScheme("package")
+                addDataScheme(
+                    "package"
+                )
             }
 
         ContextCompat.registerReceiver(
@@ -1289,18 +1516,22 @@ fun AddAppScreen(
         }
     }
 
-    /*
-     * Load apps in background.
-     * If cache exists, this returns immediately.
-     */
-    LaunchedEffect(refreshKey) {
+    LaunchedEffect(
+        refreshKey
+    ) {
 
         val apps =
-            withContext(Dispatchers.IO) {
-                getInstalledApps(context)
+            withContext(
+                Dispatchers.IO
+            ) {
+
+                getInstalledApps(
+                    context
+                )
             }
 
-        allApps = apps
+        allApps =
+            apps
     }
 
     var searchText by remember {
@@ -1309,7 +1540,9 @@ fun AddAppScreen(
 
     var selectedApps by remember {
         mutableStateOf(
-            loadSelectedApps(context)
+            loadSelectedApps(
+                context
+            )
         )
     }
 
@@ -1319,7 +1552,9 @@ fun AddAppScreen(
             allApps
         ) {
 
-            if (searchText.isBlank()) {
+            if (
+                searchText.isBlank()
+            ) {
 
                 allApps
 
@@ -1359,9 +1594,13 @@ fun AddAppScreen(
         ) {
 
             Button(
-                onClick = onBack
+                onClick =
+                    onBack
             ) {
-                Text("←")
+
+                Text(
+                    "←"
+                )
             }
 
             Spacer(
@@ -1370,7 +1609,9 @@ fun AddAppScreen(
             )
 
             Text(
-                text = "Add Apps",
+                text =
+                    "Add Apps",
+
                 style =
                     MaterialTheme.typography
                         .headlineSmall
@@ -1381,7 +1622,8 @@ fun AddAppScreen(
             modifier =
                 Modifier.fillMaxWidth(),
 
-            value = searchText,
+            value =
+                searchText,
 
             onValueChange = {
                 searchText = it
@@ -1407,9 +1649,10 @@ fun AddAppScreen(
         )
 
         LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
         ) {
 
             items(
@@ -1425,25 +1668,28 @@ fun AddAppScreen(
                     )
 
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
 
-                            selectedApps =
-                                if (selected) {
+                                selectedApps =
+                                    if (
+                                        selected
+                                    ) {
 
-                                    selectedApps -
-                                            app.packageName
+                                        selectedApps -
+                                                app.packageName
 
-                                } else {
+                                    } else {
 
-                                    selectedApps +
-                                            app.packageName
-                                }
-                        }
-                        .padding(
-                            vertical = 3.dp
-                        ),
+                                        selectedApps +
+                                                app.packageName
+                                    }
+                            }
+                            .padding(
+                                vertical = 3.dp
+                            ),
 
                     verticalAlignment =
                         Alignment.CenterVertically
@@ -1457,7 +1703,9 @@ fun AddAppScreen(
                             { checked ->
 
                                 selectedApps =
-                                    if (checked) {
+                                    if (
+                                        checked
+                                    ) {
 
                                         selectedApps +
                                                 app.packageName
@@ -1471,7 +1719,9 @@ fun AddAppScreen(
                     )
 
                     Text(
-                        text = app.name,
+                        text =
+                            app.name,
+
                         modifier =
                             Modifier.padding(
                                 start = 6.dp
@@ -1482,12 +1732,13 @@ fun AddAppScreen(
         }
 
         Button(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(
-                    top = 8.dp,
-                    bottom = 16.dp
-                ),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        top = 8.dp,
+                        bottom = 16.dp
+                    ),
 
             onClick = {
 
@@ -1500,7 +1751,9 @@ fun AddAppScreen(
             }
         ) {
 
-            Text("Save")
+            Text(
+                "Save"
+            )
         }
     }
 }
@@ -1522,7 +1775,9 @@ fun AddedAppStatsScreen(
 
     val selectedApps =
         remember(refresh) {
-            loadSelectedApps(context)
+            loadSelectedApps(
+                context
+            )
         }
 
     val today =
@@ -1553,9 +1808,13 @@ fun AddedAppStatsScreen(
         ) {
 
             Button(
-                onClick = onBack
+                onClick =
+                    onBack
             ) {
-                Text("←")
+
+                Text(
+                    "←"
+                )
             }
 
             Spacer(
@@ -1564,7 +1823,9 @@ fun AddedAppStatsScreen(
             )
 
             Text(
-                text = "App Stats",
+                text =
+                    "App Stats",
+
                 style =
                     MaterialTheme.typography
                         .headlineSmall
@@ -1572,7 +1833,9 @@ fun AddedAppStatsScreen(
         }
 
         Text(
-            text = "Today",
+            text =
+                "Today",
+
             style =
                 MaterialTheme.typography
                     .titleLarge
@@ -1583,7 +1846,9 @@ fun AddedAppStatsScreen(
                 Modifier.height(12.dp)
         )
 
-        if (selectedApps.isEmpty()) {
+        if (
+            selectedApps.isEmpty()
+        ) {
 
             Text(
                 "No apps added yet."
@@ -1607,12 +1872,14 @@ fun AddedAppStatsScreen(
                                 )
 
                         } catch (
-                            e: Exception
+                            _: Exception
                         ) {
                             null
                         }
 
-                    if (info != null) {
+                    if (
+                        info != null
+                    ) {
 
                         val name =
                             context.packageManager
@@ -1629,8 +1896,11 @@ fun AddedAppStatsScreen(
                             )
 
                         AppUsageCard(
-                            name = name,
-                            usageMillis = usage,
+                            name =
+                                name,
+
+                            usageMillis =
+                                usage,
 
                             onClick = {
                                 onAppClick(
@@ -1657,32 +1927,38 @@ fun AppUsageCard(
 ) {
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-                vertical = 6.dp
-            )
-            .background(
-                Color.White,
-                RoundedCornerShape(20.dp)
-            )
-            .clickable {
-                onClick()
-            }
-            .padding(18.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    vertical = 6.dp
+                )
+                .background(
+                    Color.White,
+                    RoundedCornerShape(
+                        20.dp
+                    )
+                )
+                .clickable {
+                    onClick()
+                }
+                .padding(18.dp),
 
         verticalAlignment =
             Alignment.CenterVertically
     ) {
 
         Box(
-            modifier = Modifier
-                .width(52.dp)
-                .height(52.dp)
-                .background(
-                    Color(0xFFE8EEFF),
-                    RoundedCornerShape(16.dp)
-                ),
+            modifier =
+                Modifier
+                    .width(52.dp)
+                    .height(52.dp)
+                    .background(
+                        Color(0xFFE8EEFF),
+                        RoundedCornerShape(
+                            16.dp
+                        )
+                    ),
 
             contentAlignment =
                 Alignment.Center
@@ -1711,14 +1987,17 @@ fun AppUsageCard(
         ) {
 
             Text(
-                text = name,
+                text =
+                    name,
+
                 style =
                     MaterialTheme.typography
                         .titleLarge
             )
 
             Text(
-                text = "Today"
+                text =
+                    "Today"
             )
         }
 
@@ -1759,12 +2038,15 @@ fun AppDetailScreen(
                         )
 
                 context.packageManager
-                    .getApplicationLabel(info)
+                    .getApplicationLabel(
+                        info
+                    )
                     .toString()
 
             } catch (
-                e: Exception
+                _: Exception
             ) {
+
                 "App"
             }
         }
@@ -1776,7 +2058,9 @@ fun AppDetailScreen(
     }
 
     var mode by remember {
-        mutableStateOf("Daily")
+        mutableStateOf(
+            "Daily"
+        )
     }
 
     var menuExpanded by remember {
@@ -1788,10 +2072,11 @@ fun AppDetailScreen(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .safeDrawingPadding()
-            .padding(20.dp)
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .safeDrawingPadding()
+                .padding(20.dp)
     ) {
 
         Row(
@@ -1803,9 +2088,13 @@ fun AppDetailScreen(
         ) {
 
             Button(
-                onClick = onBack
+                onClick =
+                    onBack
             ) {
-                Text("←")
+
+                Text(
+                    "←"
+                )
             }
 
             Spacer(
@@ -1814,7 +2103,9 @@ fun AppDetailScreen(
             )
 
             Text(
-                text = appName,
+                text =
+                    appName,
+
                 style =
                     MaterialTheme.typography
                         .headlineSmall
@@ -1825,8 +2116,6 @@ fun AppDetailScreen(
             modifier =
                 Modifier.height(16.dp)
         )
-
-        /* MINI CALENDAR BUTTON */
 
         OutlinedButton(
             modifier =
@@ -1854,8 +2143,6 @@ fun AppDetailScreen(
                 Modifier.height(12.dp)
         )
 
-        /* DAILY / HOURLY */
-
         Box {
 
             Button(
@@ -1880,25 +2167,35 @@ fun AppDetailScreen(
 
                 DropdownMenuItem(
                     text = {
-                        Text("Daily")
+                        Text(
+                            "Daily"
+                        )
                     },
 
                     onClick = {
 
-                        mode = "Daily"
-                        menuExpanded = false
+                        mode =
+                            "Daily"
+
+                        menuExpanded =
+                            false
                     }
                 )
 
                 DropdownMenuItem(
                     text = {
-                        Text("Hourly")
+                        Text(
+                            "Hourly"
+                        )
                     },
 
                     onClick = {
 
-                        mode = "Hourly"
-                        menuExpanded = false
+                        mode =
+                            "Hourly"
+
+                        menuExpanded =
+                            false
                     }
                 )
             }
@@ -1909,39 +2206,57 @@ fun AppDetailScreen(
                 Modifier.height(20.dp)
         )
 
-        if (mode == "Daily") {
+        if (
+            mode == "Daily"
+        ) {
 
             DailyDetail(
-                context = context,
-                packageName = packageName,
-                date = selectedDate
+                context =
+                    context,
+
+                packageName =
+                    packageName,
+
+                date =
+                    selectedDate
             )
 
         } else {
 
             HourlyDetail(
-                context = context,
-                packageName = packageName,
-                date = selectedDate
+                context =
+                    context,
+
+                packageName =
+                    packageName,
+
+                date =
+                    selectedDate
             )
         }
     }
 
-    if (showCalendar) {
+    if (
+        showCalendar
+    ) {
 
         MiniCalendar(
-            selectedDate = selectedDate,
+            selectedDate =
+                selectedDate,
 
-            onDateSelected = { date ->
+            onDateSelected = {
+                    date ->
 
                 selectedDate =
                     date
 
-                showCalendar = false
+                showCalendar =
+                    false
             },
 
             onDismiss = {
-                showCalendar = false
+                showCalendar =
+                    false
             }
         )
     }
@@ -1972,17 +2287,22 @@ fun DailyDetail(
         }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                Color.White,
-                RoundedCornerShape(22.dp)
-            )
-            .padding(24.dp)
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .background(
+                    Color.White,
+                    RoundedCornerShape(
+                        22.dp
+                    )
+                )
+                .padding(24.dp)
     ) {
 
         Text(
-            text = "Total Usage",
+            text =
+                "Total Usage",
+
             style =
                 MaterialTheme.typography
                     .titleMedium
@@ -1995,7 +2315,9 @@ fun DailyDetail(
 
         Text(
             text =
-                formatUsageTime(total),
+                formatUsageTime(
+                    total
+                ),
 
             style =
                 MaterialTheme.typography
@@ -2028,7 +2350,9 @@ fun HourlyDetail(
             )
         }
 
-    if (sessions.isEmpty()) {
+    if (
+        sessions.isEmpty()
+    ) {
 
         Text(
             "No usage sessions on this date."
@@ -2063,16 +2387,19 @@ fun UsageSessionCard(
 ) {
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-                vertical = 5.dp
-            )
-            .background(
-                Color.White,
-                RoundedCornerShape(18.dp)
-            )
-            .padding(18.dp)
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    vertical = 5.dp
+                )
+                .background(
+                    Color.White,
+                    RoundedCornerShape(
+                        18.dp
+                    )
+                )
+                .padding(18.dp)
     ) {
 
         Row(
@@ -2086,7 +2413,9 @@ fun UsageSessionCard(
             Column {
 
                 Text(
-                    text = "OPEN",
+                    text =
+                        "OPEN",
+
                     style =
                         MaterialTheme.typography
                             .labelMedium
@@ -2115,7 +2444,9 @@ fun UsageSessionCard(
             ) {
 
                 Text(
-                    text = "CLOSE",
+                    text =
+                        "CLOSE",
+
                     style =
                         MaterialTheme.typography
                             .labelMedium
@@ -2165,91 +2496,186 @@ fun MiniCalendar(
     onDateSelected: (Calendar) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val today = remember {
-        Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
+
+    val today =
+        remember {
+
+            Calendar.getInstance()
+                .apply {
+
+                    set(
+                        Calendar.HOUR_OF_DAY,
+                        0
+                    )
+
+                    set(
+                        Calendar.MINUTE,
+                        0
+                    )
+
+                    set(
+                        Calendar.SECOND,
+                        0
+                    )
+
+                    set(
+                        Calendar.MILLISECOND,
+                        0
+                    )
+                }
         }
-    }
 
     var visibleMonth by remember {
+
         mutableStateOf(
-            selectedDate.clone() as Calendar
+            selectedDate.clone()
+                    as Calendar
         )
     }
 
-    // Keep visible month on the 1st day
-    LaunchedEffect(selectedDate) {
-        visibleMonth = (selectedDate.clone() as Calendar).apply {
-            set(Calendar.DAY_OF_MONTH, 1)
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
+    LaunchedEffect(
+        selectedDate
+    ) {
+
+        visibleMonth =
+            (
+                    selectedDate.clone()
+                            as Calendar
+                    ).apply {
+
+                    set(
+                        Calendar.DAY_OF_MONTH,
+                        1
+                    )
+
+                    set(
+                        Calendar.HOUR_OF_DAY,
+                        0
+                    )
+
+                    set(
+                        Calendar.MINUTE,
+                        0
+                    )
+
+                    set(
+                        Calendar.SECOND,
+                        0
+                    )
+
+                    set(
+                        Calendar.MILLISECOND,
+                        0
+                    )
+                }
     }
 
     val currentMonthIndex =
-        today.get(Calendar.YEAR) * 12 + today.get(Calendar.MONTH)
+        today.get(
+            Calendar.YEAR
+        ) * 12 +
+                today.get(
+                    Calendar.MONTH
+                )
 
     val visibleMonthIndex =
-        visibleMonth.get(Calendar.YEAR) * 12 +
-                visibleMonth.get(Calendar.MONTH)
+        visibleMonth.get(
+            Calendar.YEAR
+        ) * 12 +
+                visibleMonth.get(
+                    Calendar.MONTH
+                )
 
     val canGoForward =
-        visibleMonthIndex < currentMonthIndex
+        visibleMonthIndex <
+                currentMonthIndex
 
     Dialog(
-        onDismissRequest = onDismiss
+        onDismissRequest =
+            onDismiss
     ) {
+
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp),
-            shape = RoundedCornerShape(24.dp),
-            color = Color.White,
-            tonalElevation = 8.dp
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = 20.dp
+                    ),
+
+            shape =
+                RoundedCornerShape(
+                    24.dp
+                ),
+
+            color =
+                Color.White,
+
+            tonalElevation =
+                8.dp
         ) {
+
             Column(
-                modifier = Modifier.padding(18.dp)
+                modifier =
+                    Modifier.padding(
+                        18.dp
+                    )
             ) {
 
-                // HEADER
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween,
+
+                    verticalAlignment =
+                        Alignment.CenterVertically
                 ) {
+
                     Text(
-                        text = "Select Date",
-                        style = MaterialTheme.typography.titleLarge
+                        text =
+                            "Select Date",
+
+                        style =
+                            MaterialTheme.typography
+                                .titleLarge
                     )
 
                     TextButton(
-                        onClick = onDismiss
+                        onClick =
+                            onDismiss
                     ) {
-                        Text("✕")
+
+                        Text(
+                            "✕"
+                        )
                     }
                 }
 
                 Spacer(
-                    modifier = Modifier.height(8.dp)
+                    modifier =
+                        Modifier.height(8.dp)
                 )
 
-                // MONTH NAVIGATION
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier =
+                        Modifier.fillMaxWidth(),
+
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween,
+
+                    verticalAlignment =
+                        Alignment.CenterVertically
                 ) {
 
-                    // PREVIOUS MONTH
                     IconButton(
                         onClick = {
+
                             val previousMonth =
-                                visibleMonth.clone() as Calendar
+                                visibleMonth
+                                    .clone()
+                                        as Calendar
 
                             previousMonth.add(
                                 Calendar.MONTH,
@@ -2261,30 +2687,49 @@ fun MiniCalendar(
                                 1
                             )
 
-                            visibleMonth = previousMonth
+                            visibleMonth =
+                                previousMonth
                         }
                     ) {
+
                         Text(
-                            text = "‹",
-                            style = MaterialTheme.typography.headlineMedium
+                            text =
+                                "‹",
+
+                            style =
+                                MaterialTheme.typography
+                                    .headlineMedium
                         )
                     }
 
                     Text(
-                        text = SimpleDateFormat(
-                            "MMMM yyyy",
-                            Locale.getDefault()
-                        ).format(visibleMonth.time),
-                        style = MaterialTheme.typography.titleMedium
+                        text =
+                            SimpleDateFormat(
+                                "MMMM yyyy",
+                                Locale.getDefault()
+                            ).format(
+                                visibleMonth.time
+                            ),
+
+                        style =
+                            MaterialTheme.typography
+                                .titleMedium
                     )
 
-                    // NEXT MONTH
                     IconButton(
-                        enabled = canGoForward,
+                        enabled =
+                            canGoForward,
+
                         onClick = {
-                            if (canGoForward) {
+
+                            if (
+                                canGoForward
+                            ) {
+
                                 val nextMonth =
-                                    visibleMonth.clone() as Calendar
+                                    visibleMonth
+                                        .clone()
+                                            as Calendar
 
                                 nextMonth.add(
                                     Calendar.MONTH,
@@ -2296,46 +2741,70 @@ fun MiniCalendar(
                                     1
                                 )
 
-                                visibleMonth = nextMonth
+                                visibleMonth =
+                                    nextMonth
                             }
                         }
                     ) {
+
                         Text(
-                            text = "›",
-                            style = MaterialTheme.typography.headlineMedium
+                            text =
+                                "›",
+
+                            style =
+                                MaterialTheme.typography
+                                    .headlineMedium
                         )
                     }
                 }
 
                 Spacer(
-                    modifier = Modifier.height(8.dp)
+                    modifier =
+                        Modifier.height(8.dp)
                 )
 
-                // WEEK DAYS
                 Row(
-                    modifier = Modifier.fillMaxWidth()
+                    modifier =
+                        Modifier.fillMaxWidth()
                 ) {
+
                     listOf(
-                        "S", "M", "T", "W", "T", "F", "S"
-                    ).forEach { dayName ->
+                        "S",
+                        "M",
+                        "T",
+                        "W",
+                        "T",
+                        "F",
+                        "S"
+                    ).forEach {
+                            dayName ->
 
                         Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(32.dp),
-                            contentAlignment = Alignment.Center
+                            modifier =
+                                Modifier
+                                    .weight(1f)
+                                    .height(32.dp),
+
+                            contentAlignment =
+                                Alignment.Center
                         ) {
+
                             Text(
-                                text = dayName,
-                                style = MaterialTheme.typography.labelMedium
+                                text =
+                                    dayName,
+
+                                style =
+                                    MaterialTheme.typography
+                                        .labelMedium
                             )
                         }
                     }
                 }
 
-                // MONTH DETAILS
                 val firstDayOfMonth =
-                    visibleMonth.clone() as Calendar
+                    visibleMonth
+                        .clone()
+                            as Calendar
 
                 firstDayOfMonth.set(
                     Calendar.DAY_OF_MONTH,
@@ -2343,9 +2812,10 @@ fun MiniCalendar(
                 )
 
                 val daysInMonth =
-                    firstDayOfMonth.getActualMaximum(
-                        Calendar.DAY_OF_MONTH
-                    )
+                    firstDayOfMonth
+                        .getActualMaximum(
+                            Calendar.DAY_OF_MONTH
+                        )
 
                 val leadingEmptyDays =
                     firstDayOfMonth.get(
@@ -2353,26 +2823,35 @@ fun MiniCalendar(
                     ) - 1
 
                 val totalCells =
-                    leadingEmptyDays + daysInMonth
+                    leadingEmptyDays +
+                            daysInMonth
 
                 val numberOfRows =
-                    (totalCells + 6) / 7
+                    (
+                            totalCells + 6
+                            ) / 7
 
-                // DATE GRID
                 Column(
-                    modifier = Modifier.fillMaxWidth()
+                    modifier =
+                        Modifier.fillMaxWidth()
                 ) {
 
-                    repeat(numberOfRows) { row ->
+                    repeat(
+                        numberOfRows
+                    ) { row ->
 
                         Row(
-                            modifier = Modifier.fillMaxWidth()
+                            modifier =
+                                Modifier.fillMaxWidth()
                         ) {
 
-                            repeat(7) { column ->
+                            repeat(
+                                7
+                            ) { column ->
 
                                 val cellIndex =
-                                    row * 7 + column
+                                    row * 7 +
+                                            column
 
                                 val day =
                                     cellIndex -
@@ -2385,108 +2864,139 @@ fun MiniCalendar(
                                 ) {
 
                                     Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(42.dp)
+                                        modifier =
+                                            Modifier
+                                                .weight(1f)
+                                                .height(42.dp)
                                     )
 
                                 } else {
 
                                     val cellDate =
-                                        Calendar.getInstance().apply {
+                                        Calendar
+                                            .getInstance()
+                                            .apply {
 
-                                            set(
-                                                Calendar.YEAR,
-                                                visibleMonth.get(
-                                                    Calendar.YEAR
+                                                set(
+                                                    Calendar.YEAR,
+                                                    visibleMonth.get(
+                                                        Calendar.YEAR
+                                                    )
                                                 )
-                                            )
 
-                                            set(
-                                                Calendar.MONTH,
-                                                visibleMonth.get(
-                                                    Calendar.MONTH
+                                                set(
+                                                    Calendar.MONTH,
+                                                    visibleMonth.get(
+                                                        Calendar.MONTH
+                                                    )
                                                 )
-                                            )
 
-                                            set(
-                                                Calendar.DAY_OF_MONTH,
-                                                day
-                                            )
+                                                set(
+                                                    Calendar.DAY_OF_MONTH,
+                                                    day
+                                                )
 
-                                            set(
-                                                Calendar.HOUR_OF_DAY,
-                                                0
-                                            )
+                                                set(
+                                                    Calendar.HOUR_OF_DAY,
+                                                    0
+                                                )
 
-                                            set(
-                                                Calendar.MINUTE,
-                                                0
-                                            )
+                                                set(
+                                                    Calendar.MINUTE,
+                                                    0
+                                                )
 
-                                            set(
-                                                Calendar.SECOND,
-                                                0
-                                            )
+                                                set(
+                                                    Calendar.SECOND,
+                                                    0
+                                                )
 
-                                            set(
-                                                Calendar.MILLISECOND,
-                                                0
-                                            )
-                                        }
+                                                set(
+                                                    Calendar.MILLISECOND,
+                                                    0
+                                                )
+                                            }
 
                                     val isFuture =
-                                        cellDate.after(today)
+                                        cellDate.after(
+                                            today
+                                        )
 
                                     val isSelected =
-                                        cellDate.get(Calendar.YEAR) ==
-                                                selectedDate.get(Calendar.YEAR) &&
-                                                cellDate.get(Calendar.MONTH) ==
-                                                selectedDate.get(Calendar.MONTH) &&
-                                                cellDate.get(Calendar.DAY_OF_MONTH) ==
-                                                selectedDate.get(Calendar.DAY_OF_MONTH)
-
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(42.dp)
-                                            .padding(2.dp)
-                                            .background(
-                                                if (isSelected) {
-                                                    Color(0xFFE1EAFF)
-                                                } else {
-                                                    Color.Transparent
-                                                },
-                                                RoundedCornerShape(12.dp)
-                                            )
-                                            .clickable(
-                                                enabled = !isFuture
-                                            ) {
-
-                                                val chosenDate =
-                                                    cellDate.clone()
-                                                            as Calendar
-
-                                                onDateSelected(
-                                                    chosenDate
+                                        cellDate.get(
+                                            Calendar.YEAR
+                                        ) ==
+                                                selectedDate.get(
+                                                    Calendar.YEAR
+                                                ) &&
+                                                cellDate.get(
+                                                    Calendar.MONTH
+                                                ) ==
+                                                selectedDate.get(
+                                                    Calendar.MONTH
+                                                ) &&
+                                                cellDate.get(
+                                                    Calendar.DAY_OF_MONTH
+                                                ) ==
+                                                selectedDate.get(
+                                                    Calendar.DAY_OF_MONTH
                                                 )
 
-                                                onDismiss()
-                                            },
-                                        contentAlignment = Alignment.Center
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .weight(1f)
+                                                .height(42.dp)
+                                                .padding(2.dp)
+                                                .background(
+                                                    if (
+                                                        isSelected
+                                                    ) {
+                                                        Color(
+                                                            0xFFE1EAFF
+                                                        )
+                                                    } else {
+                                                        Color.Transparent
+                                                    },
+                                                    RoundedCornerShape(
+                                                        12.dp
+                                                    )
+                                                )
+                                                .clickable(
+                                                    enabled =
+                                                        !isFuture
+                                                ) {
+
+                                                    val chosenDate =
+                                                        cellDate
+                                                            .clone()
+                                                                as Calendar
+
+                                                    onDateSelected(
+                                                        chosenDate
+                                                    )
+                                                },
+
+                                        contentAlignment =
+                                            Alignment.Center
                                     ) {
 
                                         Text(
-                                            text = day.toString(),
+                                            text =
+                                                day.toString(),
+
                                             color =
-                                                if (isFuture) {
+                                                if (
+                                                    isFuture
+                                                ) {
                                                     Color.LightGray
                                                 } else {
                                                     Color.Unspecified
                                                 },
-                                            style = MaterialTheme
-                                                .typography
-                                                .bodyMedium
+
+                                            style =
+                                                MaterialTheme.typography
+                                                    .bodyMedium
                                         )
                                     }
                                 }
@@ -2496,25 +3006,33 @@ fun MiniCalendar(
                 }
 
                 Spacer(
-                    modifier = Modifier.height(10.dp)
+                    modifier =
+                        Modifier.height(10.dp)
                 )
 
-                // TODAY
                 OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        val todayCopy =
-                            today.clone() as Calendar
+                    modifier =
+                        Modifier.fillMaxWidth(),
 
-                        onDateSelected(todayCopy)
+                    onClick = {
+
+                        val todayCopy =
+                            today.clone()
+                                    as Calendar
+
+                        onDateSelected(
+                            todayCopy
+                        )
+
                         onDismiss()
                     }
                 ) {
-                    Text("Today")
+
+                    Text(
+                        "Today"
+                    )
                 }
             }
         }
     }
 }
-
-
