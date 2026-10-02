@@ -761,7 +761,19 @@ fun AppSenseApp() {
     }
 
     var userName by remember {
-        mutableStateOf("")
+        mutableStateOf(
+            context
+                .getSharedPreferences(
+                    "appsense_preferences",
+                    Context.MODE_PRIVATE
+                )
+                .getString(
+                    "user_name",
+                    ""
+                )
+                ?.trim()
+                .orEmpty()
+        )
     }
 
     // Splash is shown only after the required
@@ -2189,40 +2201,20 @@ fun AppDetailScreen(
 
     val appName =
         remember(packageName) {
-
             try {
-
-                val info =
-                    context.packageManager
-                        .getApplicationInfo(
-                            packageName,
-                            0
-                        )
-
-                context.packageManager
-                    .getApplicationLabel(
-                        info
-                    )
-                    .toString()
-
-            } catch (
-                _: Exception
-            ) {
-
+                val info = context.packageManager.getApplicationInfo(packageName, 0)
+                context.packageManager.getApplicationLabel(info).toString()
+            } catch (_: Exception) {
                 "App"
             }
         }
 
     var selectedDate by remember {
-        mutableStateOf(
-            Calendar.getInstance()
-        )
+        mutableStateOf(Calendar.getInstance())
     }
 
     var mode by remember {
-        mutableStateOf(
-            "Daily"
-        )
+        mutableStateOf("Daily")
     }
 
     var menuExpanded by remember {
@@ -2234,191 +2226,108 @@ fun AppDetailScreen(
     }
 
     Column(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .safeDrawingPadding()
-                .padding(20.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .padding(20.dp)
     ) {
 
         Row(
-            modifier =
-                Modifier.fillMaxWidth(),
-
-            verticalAlignment =
-                Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-
-            Button(
-                onClick =
-                    onBack
-            ) {
-
-                Text(
-                    "←"
-                )
+            Button(onClick = onBack) {
+                Text("←")
             }
 
-            Spacer(
-                modifier =
-                    Modifier.width(12.dp)
-            )
+            Spacer(modifier = Modifier.width(12.dp))
 
-            Text(
-                text =
-                    appName,
-
-                style =
-                    MaterialTheme.typography
-                        .headlineSmall
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = appName,
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Text(
+                    text = "Usage insights",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
-        Spacer(
-            modifier =
-                Modifier.height(16.dp)
-        )
+        Spacer(modifier = Modifier.height(16.dp))
 
+        // Date selector — original functionality retained.
         OutlinedButton(
-            modifier =
-                Modifier.fillMaxWidth(),
-
-            onClick = {
-                showCalendar = true
-            }
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { showCalendar = true }
         ) {
-
             Text(
-                text =
-                    "📅  " +
-                            SimpleDateFormat(
-                                "EEE, d MMM yyyy",
-                                Locale.getDefault()
-                            ).format(
-                                selectedDate.time
-                            )
+                text = "📅  " + SimpleDateFormat(
+                    "EEE, d MMM yyyy",
+                    Locale.getDefault()
+                ).format(selectedDate.time)
             )
         }
 
-        Spacer(
-            modifier =
-                Modifier.height(12.dp)
-        )
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Box {
-
-            Button(
-                onClick = {
-                    menuExpanded = true
-                }
+        // Daily / Hourly selector — original functionality retained.
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { menuExpanded = true }
             ) {
-
-                Text(
-                    "$mode  ▼"
-                )
+                Text("$mode  ▼")
             }
 
             DropdownMenu(
-                expanded =
-                    menuExpanded,
-
-                onDismissRequest = {
-                    menuExpanded = false
-                }
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false }
             ) {
-
                 DropdownMenuItem(
-                    text = {
-                        Text(
-                            "Daily"
-                        )
-                    },
-
+                    text = { Text("Daily") },
                     onClick = {
-
-                        mode =
-                            "Daily"
-
-                        menuExpanded =
-                            false
+                        mode = "Daily"
+                        menuExpanded = false
                     }
                 )
-
                 DropdownMenuItem(
-                    text = {
-                        Text(
-                            "Hourly"
-                        )
-                    },
-
+                    text = { Text("Hourly") },
                     onClick = {
-
-                        mode =
-                            "Hourly"
-
-                        menuExpanded =
-                            false
+                        mode = "Hourly"
+                        menuExpanded = false
                     }
                 )
             }
         }
 
-        Spacer(
-            modifier =
-                Modifier.height(20.dp)
-        )
+        Spacer(modifier = Modifier.height(16.dp))
 
-        if (
-            mode == "Daily"
-        ) {
-
+        // Keep the original Daily / Hourly data views.
+        if (mode == "Daily") {
             DailyDetail(
-                context =
-                    context,
-
-                packageName =
-                    packageName,
-
-                date =
-                    selectedDate
+                context = context,
+                packageName = packageName,
+                date = selectedDate
             )
-
         } else {
-
             HourlyDetail(
-                context =
-                    context,
-
-                packageName =
-                    packageName,
-
-                date =
-                    selectedDate
+                context = context,
+                packageName = packageName,
+                date = selectedDate
             )
         }
     }
 
-    if (
-        showCalendar
-    ) {
-
+    if (showCalendar) {
         MiniCalendar(
-            selectedDate =
-                selectedDate,
-
-            onDateSelected = {
-                    date ->
-
-                selectedDate =
-                    date
-
-                showCalendar =
-                    false
+            selectedDate = selectedDate,
+            onDateSelected = { date ->
+                selectedDate = date
+                showCalendar = false
             },
-
             onDismiss = {
-                showCalendar =
-                    false
+                showCalendar = false
             }
         )
     }
@@ -2435,55 +2344,43 @@ fun DailyDetail(
     date: Calendar
 ) {
 
-    val total =
-        remember(
-            packageName,
-            date.timeInMillis
-        ) {
-
-            getAppUsageForDate(
-                context,
-                packageName,
-                date
-            )
-        }
+    val total = remember(packageName, date.timeInMillis) {
+        getAppUsageForDate(context, packageName, date)
+    }
 
     Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .background(
-                    Color.White,
-                    RoundedCornerShape(
-                        22.dp
-                    )
-                )
-                .padding(24.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                Color.White,
+                RoundedCornerShape(22.dp)
+            )
+            .padding(24.dp)
     ) {
-
         Text(
-            text =
-                "Total Usage",
-
-            style =
-                MaterialTheme.typography
-                    .titleMedium
+            text = "Today's usage",
+            style = MaterialTheme.typography.titleMedium
         )
 
-        Spacer(
-            modifier =
-                Modifier.height(8.dp)
-        )
+        Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text =
-                formatUsageTime(
-                    total
-                ),
+            text = "Total time spent in $packageName",
+            style = MaterialTheme.typography.bodySmall
+        )
 
-            style =
-                MaterialTheme.typography
-                    .headlineMedium
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = formatUsageTime(total),
+            style = MaterialTheme.typography.headlineMedium
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = "Focus on awareness, not just the number.",
+            style = MaterialTheme.typography.bodySmall
         )
     }
 }
@@ -2499,42 +2396,46 @@ fun HourlyDetail(
     date: Calendar
 ) {
 
-    val sessions =
-        remember(
-            packageName,
-            date.timeInMillis
-        ) {
+    val sessions = remember(packageName, date.timeInMillis) {
+        getHourlySessions(context, packageName, date)
+    }
 
-            getHourlySessions(
-                context,
-                packageName,
-                date
+    if (sessions.isEmpty()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Color.White,
+                    RoundedCornerShape(22.dp)
+                )
+                .padding(24.dp)
+        ) {
+            Text(
+                text = "No usage sessions",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "There is no recorded activity for this date.",
+                style = MaterialTheme.typography.bodySmall
             )
         }
-
-    if (
-        sessions.isEmpty()
-    ) {
-
-        Text(
-            "No usage sessions on this date."
-        )
-
         return
     }
 
     LazyColumn(
-        modifier =
-            Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxWidth()
     ) {
-
-        items(
-            sessions
-        ) { session ->
-
-            UsageSessionCard(
-                session
+        item {
+            Text(
+                text = "Activity timeline",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 8.dp)
             )
+        }
+
+        items(sessions) { session ->
+            UsageSessionCard(session)
         }
     }
 }
@@ -2549,101 +2450,50 @@ fun UsageSessionCard(
 ) {
 
     Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(
-                    vertical = 5.dp
-                )
-                .background(
-                    Color.White,
-                    RoundedCornerShape(
-                        18.dp
-                    )
-                )
-                .padding(18.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .background(
+                Color.White,
+                RoundedCornerShape(18.dp)
+            )
+            .padding(18.dp)
     ) {
 
         Row(
-            modifier =
-                Modifier.fillMaxWidth(),
-
-            horizontalArrangement =
-                Arrangement.SpaceBetween
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-
             Column {
-
                 Text(
-                    text =
-                        "OPEN",
-
-                    style =
-                        MaterialTheme.typography
-                            .labelMedium
+                    text = "OPEN",
+                    style = MaterialTheme.typography.labelMedium
                 )
-
-                Spacer(
-                    modifier =
-                        Modifier.height(3.dp)
-                )
-
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
-                    text =
-                        formatClockTime(
-                            session.startTime
-                        ),
-
-                    style =
-                        MaterialTheme.typography
-                            .titleMedium
+                    text = formatClockTime(session.startTime),
+                    style = MaterialTheme.typography.titleMedium
                 )
             }
 
-            Column(
-                horizontalAlignment =
-                    Alignment.End
-            ) {
-
+            Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text =
-                        "CLOSE",
-
-                    style =
-                        MaterialTheme.typography
-                            .labelMedium
+                    text = "CLOSE",
+                    style = MaterialTheme.typography.labelMedium
                 )
-
-                Spacer(
-                    modifier =
-                        Modifier.height(3.dp)
-                )
-
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
-                    text =
-                        formatClockTime(
-                            session.endTime
-                        ),
-
-                    style =
-                        MaterialTheme.typography
-                            .titleMedium
+                    text = formatClockTime(session.endTime),
+                    style = MaterialTheme.typography.titleMedium
                 )
             }
         }
 
-        Spacer(
-            modifier =
-                Modifier.height(12.dp)
-        )
+        Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text =
-                "Used ${formatUsageTime(session.durationMillis)}",
-
-            style =
-                MaterialTheme.typography
-                    .titleMedium
+            text = "Used ${formatUsageTime(session.durationMillis)}",
+            style = MaterialTheme.typography.titleMedium
         )
     }
 }
