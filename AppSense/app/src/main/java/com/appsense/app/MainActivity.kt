@@ -2049,12 +2049,22 @@ fun AddedAppStatsScreen(
                                 today
                             )
 
+                        val sessionCount =
+                            getUsageSessions(
+                                context,
+                                packageName,
+                                today
+                            ).size
+
                         AppUsageCard(
                             name =
                                 name,
 
                             usageMillis =
                                 usage,
+
+                            sessionCount =
+                                sessionCount,
 
                             onClick = {
                                 onAppClick(
@@ -2077,93 +2087,91 @@ fun AddedAppStatsScreen(
 fun AppUsageCard(
     name: String,
     usageMillis: Long,
+    sessionCount: Int,
     onClick: () -> Unit
 ) {
 
-    Row(
+    Column(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .padding(
-                    vertical = 6.dp
-                )
                 .background(
                     Color.White,
-                    RoundedCornerShape(
-                        20.dp
-                    )
+                    RoundedCornerShape(22.dp)
                 )
                 .clickable {
                     onClick()
                 }
-                .padding(18.dp),
-
-        verticalAlignment =
-            Alignment.CenterVertically
+                .padding(18.dp)
     ) {
 
-        Box(
-            modifier =
-                Modifier
-                    .width(52.dp)
-                    .height(52.dp)
-                    .background(
-                        Color(0xFFE8EEFF),
-                        RoundedCornerShape(
-                            16.dp
-                        )
-                    ),
-
-            contentAlignment =
-                Alignment.Center
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
 
-            Text(
-                text =
-                    name.firstOrNull()
-                        ?.uppercase()
-                        ?: "A",
+            Box(
+                modifier =
+                    Modifier
+                        .width(52.dp)
+                        .height(52.dp)
+                        .background(
+                            Color(0xFFE8EEFF),
+                            RoundedCornerShape(16.dp)
+                        ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text =
+                        name.firstOrNull()
+                            ?.uppercase()
+                            ?: "A",
+                    style =
+                        MaterialTheme.typography.headlineSmall
+                )
+            }
 
-                style =
-                    MaterialTheme.typography
-                        .headlineSmall
-            )
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                Text(
+                    text =
+                        if (sessionCount == 1) {
+                            "1 session today"
+                        } else {
+                            "$sessionCount sessions today"
+                        },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            Column(
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    text = formatUsageTime(usageMillis),
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Text(
+                    text = "Today",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
-        Spacer(
-            modifier =
-                Modifier.width(16.dp)
-        )
-
-        Column(
-            modifier =
-                Modifier.weight(1f)
-        ) {
-
-            Text(
-                text =
-                    name,
-
-                style =
-                    MaterialTheme.typography
-                        .titleLarge
-            )
-
-            Text(
-                text =
-                    "Today"
-            )
-        }
+        Spacer(modifier = Modifier.height(14.dp))
 
         Text(
-            text =
-                formatUsageTime(
-                    usageMillis
-                ),
-
-            style =
-                MaterialTheme.typography
-                    .titleLarge
+            text = "Tap to view detailed usage →",
+            style = MaterialTheme.typography.bodySmall
         )
     }
 }
