@@ -1677,62 +1677,52 @@ fun AddAppScreen(
 ) {
 
     var allApps by remember {
-        mutableStateOf<
-                List<AppItem>
-                >(emptyList())
+        mutableStateOf<List<AppItem>>(emptyList())
     }
 
     var refreshKey by remember {
         mutableIntStateOf(0)
     }
 
+    var searchText by remember {
+        mutableStateOf("")
+    }
+
+    var showAppPicker by remember {
+        mutableStateOf(false)
+    }
+
+    var selectedApps by remember {
+        mutableStateOf(
+            loadSelectedApps(context)
+        )
+    }
+
     DisposableEffect(context) {
 
-        val packageReceiver =
-            object :
-                BroadcastReceiver() {
+        val packageReceiver = object : BroadcastReceiver() {
 
-                override fun onReceive(
-                    context: Context?,
-                    intent: Intent?
-                ) {
-
-                    when (
-                        intent?.action
-                    ) {
-
-                        Intent.ACTION_PACKAGE_ADDED,
-                        Intent.ACTION_PACKAGE_REMOVED,
-                        Intent.ACTION_PACKAGE_CHANGED -> {
-
-                            installedAppsCache =
-                                null
-
-                            refreshKey++
-                        }
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?
+            ) {
+                when (intent?.action) {
+                    Intent.ACTION_PACKAGE_ADDED,
+                    Intent.ACTION_PACKAGE_REMOVED,
+                    Intent.ACTION_PACKAGE_CHANGED -> {
+                        installedAppsCache = null
+                        refreshKey++
                     }
                 }
             }
+        }
 
-        val filter =
-            IntentFilter().apply {
-
-                addAction(
-                    Intent.ACTION_PACKAGE_ADDED
-                )
-
-                addAction(
-                    Intent.ACTION_PACKAGE_REMOVED
-                )
-
-                addAction(
-                    Intent.ACTION_PACKAGE_CHANGED
-                )
-
-                addDataScheme(
-                    "package"
-                )
-            }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
 
         ContextCompat.registerReceiver(
             context,
@@ -1742,251 +1732,253 @@ fun AddAppScreen(
         )
 
         onDispose {
-
-            context.unregisterReceiver(
-                packageReceiver
-            )
+            context.unregisterReceiver(packageReceiver)
         }
     }
 
-    LaunchedEffect(
-        refreshKey
-    ) {
-
-        val apps =
-            withContext(
-                Dispatchers.IO
-            ) {
-
-                getInstalledApps(
-                    context
-                )
+    LaunchedEffect(refreshKey, showAppPicker) {
+        if (showAppPicker || allApps.isEmpty()) {
+            allApps = withContext(Dispatchers.IO) {
+                getInstalledApps(context)
             }
-
-        allApps =
-            apps
+        }
     }
 
-    var searchText by remember {
-        mutableStateOf("")
-    }
-
-    var selectedApps by remember {
-        mutableStateOf(
-            loadSelectedApps(
-                context
-            )
-        )
-    }
-
-    val filteredApps =
-        remember(
-            searchText,
-            allApps
-        ) {
-
-            if (
-                searchText.isBlank()
-            ) {
-
-                allApps
-
-            } else {
-
-                allApps.filter {
-
-                    it.name.contains(
-                        searchText,
-                        ignoreCase = true
+    val selectedAppItems = remember(selectedApps, allApps) {
+        selectedApps.mapNotNull { packageName ->
+            allApps.firstOrNull { it.packageName == packageName }
+                ?: try {
+                    val info = context.packageManager
+                        .getApplicationInfo(packageName, 0)
+                    AppItem(
+                        name = context.packageManager
+                            .getApplicationLabel(info)
+                            .toString(),
+                        packageName = packageName
                     )
+                } catch (_: Exception) {
+                    null
                 }
+        }.sortedBy { it.name.lowercase() }
+    }
+
+    val filteredApps = remember(searchText, allApps) {
+        if (searchText.isBlank()) {
+            allApps
+        } else {
+            allApps.filter {
+                it.name.contains(searchText, ignoreCase = true)
             }
         }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
-            .padding(
-                start = 20.dp,
-                end = 20.dp
-            )
+            .padding(horizontal = 20.dp)
     ) {
 
         Row(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        top = 12.dp,
-                        bottom = 10.dp
-                    ),
-
-            verticalAlignment =
-                Alignment.CenterVertically
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, bottom = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-
-            Button(
-                onClick =
-                    onBack
-            ) {
-
-                Text(
-                    "←"
-                )
+            Button(onClick = onBack) {
+                Text("←")
             }
 
-            Spacer(
-                modifier =
-                    Modifier.width(12.dp)
-            )
+            Spacer(modifier = Modifier.width(12.dp))
 
-            Text(
-                text =
-                    "Add Apps",
+            Column {
+                Text(
+                    text = "Tracked Apps",
+                    style = MaterialTheme.typography.headlineSmall
+                )
 
-                style =
-                    MaterialTheme.typography
-                        .headlineSmall
-            )
+                Text(
+                    text = if (selectedApps.isEmpty()) {
+                        "Choose the apps you want AppSense to track"
+                    } else {
+                        "${selectedApps.size} app${if (selectedApps.size == 1) "" else "s"} being tracked"
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
-        OutlinedTextField(
-            modifier =
-                Modifier.fillMaxWidth(),
+        if (!showAppPicker) {
 
-            value =
-                searchText,
+            if (selectedAppItems.isEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.White
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No apps tracked yet",
+                            style = MaterialTheme.typography.titleMedium
+                        )
 
-            onValueChange = {
-                searchText = it
-            },
+                        Spacer(modifier = Modifier.height(6.dp))
 
-            singleLine = true,
-
-            placeholder = {
-                Text(
-                    "🔍  Find an app..."
-                )
-            }
-        )
-
-        Spacer(
-            modifier =
-                Modifier.height(10.dp)
-        )
-
-        Text(
-            text =
-                "${selectedApps.size} apps selected"
-        )
-
-        LazyColumn(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-        ) {
-
-            items(
-                filteredApps,
-                key = {
-                    it.packageName
+                        Text(
+                            text = "Add the apps whose screen time you want to understand.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 }
-            ) { app ->
+            } else {
+                Text(
+                    text = "Your tracked apps",
+                    style = MaterialTheme.typography.titleMedium
+                )
 
-                val selected =
-                    selectedApps.contains(
-                        app.packageName
-                    )
+                Spacer(modifier = Modifier.height(10.dp))
 
-                Row(
-                    modifier =
-                        Modifier
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(
+                        selectedAppItems,
+                        key = { it.packageName }
+                    ) { app ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    Color.White,
+                                    RoundedCornerShape(18.dp)
+                                )
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = app.name,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "Usage tracking enabled",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+
+                            TextButton(
+                                onClick = {
+                                    selectedApps = selectedApps - app.packageName
+                                }
+                            ) {
+                                Text("Remove")
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    showAppPicker = true
+                    searchText = ""
+                }
+            ) {
+                Text("＋  Add Apps")
+            }
+
+        } else {
+
+            Text(
+                text = "Choose apps",
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = searchText,
+                onValueChange = { searchText = it },
+                singleLine = true,
+                placeholder = { Text("Search apps") }
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(
+                    filteredApps,
+                    key = { it.packageName }
+                ) { app ->
+                    val selected = selectedApps.contains(app.packageName)
+
+                    Row(
+                        modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-
-                                selectedApps =
-                                    if (
-                                        selected
-                                    ) {
-
-                                        selectedApps -
-                                                app.packageName
-
-                                    } else {
-
-                                        selectedApps +
-                                                app.packageName
-                                    }
+                                selectedApps = if (selected) {
+                                    selectedApps - app.packageName
+                                } else {
+                                    selectedApps + app.packageName
+                                }
                             }
-                            .padding(
-                                vertical = 3.dp
-                            ),
-
-                    verticalAlignment =
-                        Alignment.CenterVertically
-                ) {
-
-                    Checkbox(
-                        checked =
-                            selected,
-
-                        onCheckedChange =
-                            { checked ->
-
-                                selectedApps =
-                                    if (
-                                        checked
-                                    ) {
-
-                                        selectedApps +
-                                                app.packageName
-
-                                    } else {
-
-                                        selectedApps -
-                                                app.packageName
-                                    }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = selected,
+                            onCheckedChange = { checked ->
+                                selectedApps = if (checked) {
+                                    selectedApps + app.packageName
+                                } else {
+                                    selectedApps - app.packageName
+                                }
                             }
-                    )
+                        )
 
-                    Text(
-                        text =
-                            app.name,
-
-                        modifier =
-                            Modifier.padding(
-                                start = 6.dp
-                            )
-                    )
+                        Text(
+                            text = app.name,
+                            modifier = Modifier.padding(start = 6.dp)
+                        )
+                    }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    showAppPicker = false
+                    searchText = ""
+                }
+            ) {
+                Text("Done")
             }
         }
 
         Button(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        top = 8.dp,
-                        bottom = 16.dp
-                    ),
-
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp, bottom = 16.dp),
+            enabled = !showAppPicker,
             onClick = {
-
-                saveSelectedApps(
-                    context,
-                    selectedApps
-                )
-
+                saveSelectedApps(context, selectedApps)
                 onSaved()
             }
         ) {
-
-            Text(
-                "Save"
-            )
+            Text("Save Changes")
         }
     }
 }
