@@ -1412,145 +1412,211 @@ fun DashboardScreen(
         }
     }
 
+    val dateText = remember {
+        SimpleDateFormat(
+            "EEEE, d MMMM",
+            Locale.getDefault()
+        ).format(Date())
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFFEAF2FF),
-                        Color(0xFFF3EEFF),
-                        Color(0xFFF8F9FC)
-                    )
-                )
-            )
+            .background(Color(0xFFF7F8FA))
     ) {
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 18.dp)
+                .padding(horizontal = 22.dp, vertical = 20.dp)
         ) {
 
-            // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = if (savedName.isNotEmpty()) {
-                            "Hello, $savedName 👋"
-                        } else {
-                            "Hello! 👋"
-                        },
-                        style = MaterialTheme.typography.headlineMedium
-                    )
-
-                    Spacer(
-                        modifier = Modifier.height(4.dp)
-                    )
-
-                    Text(
-                        text = "Take control of your screen time.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color.White,
-                    tonalElevation = 2.dp
-                ) {
-                    Text(
-                        text = "📱",
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.titleLarge
-                    )
-                }
-            }
-
-            Spacer(
-                modifier = Modifier.height(22.dp)
+            // -------------------------------------------------
+            // HEADER
+            // -------------------------------------------------
+            Text(
+                text = dateText.uppercase(Locale.getDefault()),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xFF747985)
             )
 
-            // Today's productivity snapshot
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = if (savedName.isNotEmpty()) {
+                    "Good to see you, $savedName"
+                } else {
+                    "Good to see you"
+                },
+                style = MaterialTheme.typography.headlineMedium
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "Make today intentional.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFF6D717B)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // -------------------------------------------------
+            // PRIMARY USAGE CARD
+            // -------------------------------------------------
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                color = Color.White,
-                tonalElevation = 3.dp
+                shape = RoundedCornerShape(28.dp),
+                color = Color(0xFF16181D),
+                tonalElevation = 0.dp
             ) {
                 Column(
-                    modifier = Modifier.padding(22.dp)
+                    modifier = Modifier.padding(24.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.Top
                     ) {
-                        Column {
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Text(
-                                text = "Today's screen time",
-                                style = MaterialTheme.typography.titleMedium
+                                text = "TODAY'S SCREEN TIME",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color(0xFFB9BDC6)
                             )
 
-                            Spacer(
-                                modifier = Modifier.height(6.dp)
-                            )
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             Text(
                                 text = formatUsageTime(totalUsage),
-                                style = MaterialTheme.typography.headlineLarge
+                                style = MaterialTheme.typography.displaySmall,
+                                color = Color.White
                             )
                         }
 
-                        Text(
-                            text = "⏱️",
-                            style = MaterialTheme.typography.displaySmall
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color.White.copy(alpha = 0.10f)
+                        ) {
+                            Text(
+                                text = "TODAY",
+                                modifier = Modifier.padding(
+                                    horizontal = 12.dp,
+                                    vertical = 8.dp
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White
+                            )
+                        }
                     }
 
-                    Spacer(
-                        modifier = Modifier.height(16.dp)
-                    )
+                    Spacer(modifier = Modifier.height(22.dp))
 
-                    Text(
-                        text = if (selectedApps.isEmpty()) {
-                            "Add apps to start tracking your usage."
-                        } else {
-                            "Tracking ${selectedApps.size} ${if (selectedApps.size == 1) "app" else "apps"} today."
-                        },
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color.White.copy(alpha = 0.08f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (selectedApps.isEmpty()) {
+                                    "No apps are being tracked yet"
+                                } else {
+                                    "Tracking ${selectedApps.size} ${if (selectedApps.size == 1) "app" else "apps"}"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color(0xFFE5E7EB)
+                            )
+                        }
+                    }
                 }
             }
 
-            Spacer(
-                modifier = Modifier.height(18.dp)
-            )
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // Primary action
+            // -------------------------------------------------
+            // TRACKING STATUS
+            // -------------------------------------------------
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text = "TRACKED APPS",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF858993)
+                        )
+
+                        Spacer(modifier = Modifier.height(5.dp))
+
+                        Text(
+                            text = if (selectedApps.isEmpty()) {
+                                "No apps added yet"
+                            } else {
+                                "${selectedApps.size} ${if (selectedApps.size == 1) "app" else "apps"} being tracked"
+                            },
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+
+                    if (selectedApps.isEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFF0F1F3)
+                        ) {
+                            Text(
+                                text = "Get started",
+                                modifier = Modifier.padding(
+                                    horizontal = 11.dp,
+                                    vertical = 7.dp
+                                ),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color(0xFF5F636D)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // -------------------------------------------------
+            // PRIMARY ACTION
+            // -------------------------------------------------
             Button(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(58.dp),
                 shape = RoundedCornerShape(18.dp),
+                enabled = selectedApps.isNotEmpty(),
                 onClick = onStats
             ) {
                 Text(
-                    text = "📊  View Today's Usage",
+                    text = "View today's usage",
                     style = MaterialTheme.typography.titleMedium
                 )
             }
 
-            Spacer(
-                modifier = Modifier.height(12.dp)
-            )
+            Spacer(modifier = Modifier.height(10.dp))
 
             OutlinedButton(
                 modifier = Modifier
@@ -1560,39 +1626,40 @@ fun DashboardScreen(
                 onClick = onAddApp
             ) {
                 Text(
-                    text = "＋  Manage Tracked Apps",
+                    text = "Manage tracked apps",
                     style = MaterialTheme.typography.titleMedium
                 )
             }
 
-            Spacer(
-                modifier = Modifier.height(18.dp)
-            )
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // Productivity message
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                color = Color.White.copy(alpha = 0.72f)
+            // -------------------------------------------------
+            // QUIET PRODUCTIVITY MESSAGE
+            // -------------------------------------------------
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFFE9EBEF)
                 ) {
-                    Text(
-                        text = "💡",
-                        style = MaterialTheme.typography.titleLarge
-                    )
-
                     Spacer(
-                        modifier = Modifier.width(12.dp)
-                    )
-
-                    Text(
-                        text = "Awareness is the first step. Check your usage regularly and make your screen time intentional.",
-                        style = MaterialTheme.typography.bodyMedium
+                        modifier = Modifier
+                            .width(4.dp)
+                            .height(34.dp)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Text(
+                    text = "Awareness first. Use your screen time with intention.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF737782)
+                )
             }
         }
     }
