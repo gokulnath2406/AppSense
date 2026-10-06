@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -66,6 +67,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import androidx.compose.foundation.shape.CircleShape
 
 data class AppItem(
     val name: String,
@@ -713,34 +715,66 @@ private fun addDashboardIntervalToHours(
     }
 }
 
+private data class DashboardHourlyAppUsage(
+    val packageName: String,
+    val appName: String,
+    val color: Color,
+    val hourlyUsage: LongArray
+)
+
+private fun getDashboardAppColor(packageName: String): Color {
+    val palette = listOf(
+        Color(0xFF1769E0),
+        Color(0xFF8E44AD),
+        Color(0xFFE67E22),
+        Color(0xFF16A085),
+        Color(0xFFE74C3C),
+        Color(0xFF2E86C1),
+        Color(0xFFD4AC0D),
+        Color(0xFF7DCEA0)
+    )
+
+    val index = (packageName.hashCode() and Int.MAX_VALUE) % palette.size
+    return palette[index]
+}
+
 private fun getDashboardHourlyUsage(
     context: Context,
     packageNames: Set<String>,
     date: Calendar
-): LongArray {
+): List<DashboardHourlyAppUsage> {
 
-    val buckets = LongArray(24)
+    if (packageNames.isEmpty()) return emptyList()
+
     val dayStart = getDayStart(date)
     val dayEnd = minOf(
         getDayEnd(date),
         System.currentTimeMillis()
     )
 
-    if (packageNames.isEmpty() || dayEnd <= dayStart) {
-        return buckets
-    }
+    if (dayEnd <= dayStart) return emptyList()
 
     val usageManager =
         context.getSystemService(
             Context.USAGE_STATS_SERVICE
         ) as UsageStatsManager
 
-    packageNames.forEach { packageName ->
+    val labelsByPackage =
+        getInstalledApps(context).associateBy { it.packageName }
+
+    return packageNames.map { packageName ->
+        val buckets = LongArray(24)
+
+        // Query before midnight so an app already in the foreground
+        // at 00:00 is counted from the start of this day.
         val queryStart = dayStart - 24L * 60L * 60L * 1000L
         val events = usageManager.queryEvents(queryStart, dayEnd)
         val event = UsageEvents.Event()
-        val activeActivities = mutableSetOf<String>()
-        var sessionStart: Long? = null
+
+        // Track each Activity independently. Android UsageEvents are
+        // Activity-level events, so one Boolean/openTime is not enough.
+        val activeActivities = mutableMapOf<String, Long>()
+        var packageSessionStart: Long? = null
 
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
@@ -748,53 +782,70 @@ private fun getDashboardHourlyUsage(
             if (event.packageName != packageName) continue
 
             val activityName = event.className ?: ""
+            val timestamp = event.timeStamp
 
             when (event.eventType) {
                 foregroundEvent() -> {
-                    val wasEmpty = activeActivities.isEmpty()
-                    activeActivities.add(activityName)
+                    // Ignore duplicate resume events for the same Activity.
+                    if (!activeActivities.containsKey(activityName)) {
+                        val wasPackageInactive = activeActivities.isEmpty()
+                        activeActivities[activityName] = timestamp
 
-                    if (wasEmpty && event.timeStamp >= dayStart) {
-                        sessionStart = event.timeStamp
+                        if (wasPackageInactive) {
+                            packageSessionStart = maxOf(timestamp, dayStart)
+                        }
                     }
                 }
 
-                backgroundEvent() -> {
-                    activeActivities.remove(activityName)
+                backgroundEvent(),
+                UsageEvents.Event.ACTIVITY_STOPPED -> {
+                    // Only close an Activity that we actually considered active.
+                    if (activeActivities.remove(activityName) != null &&
+                        activeActivities.isEmpty() &&
+                        packageSessionStart != null
+                    ) {
+                        val start = maxOf(packageSessionStart!!, dayStart)
+                        val end = minOf(timestamp, dayEnd)
 
-                    if (activeActivities.isEmpty() && sessionStart != null) {
-                        addDashboardIntervalToHours(
-                            buckets,
-                            dayStart,
-                            dayEnd,
-                            sessionStart!!,
-                            event.timeStamp
-                        )
-                        sessionStart = null
+                        if (end > start) {
+                            addDashboardIntervalToHours(
+                                buckets,
+                                dayStart,
+                                dayEnd,
+                                start,
+                                end
+                            )
+                        }
+
+                        packageSessionStart = null
                     }
                 }
             }
+        }
 
-            if (
-                event.timeStamp < dayStart &&
-                activeActivities.isNotEmpty()
-            ) {
-                sessionStart = dayStart
+        // App is still active when the query ends.
+        if (activeActivities.isNotEmpty() && packageSessionStart != null) {
+            val start = maxOf(packageSessionStart!!, dayStart)
+            val end = dayEnd
+
+            if (end > start) {
+                addDashboardIntervalToHours(
+                    buckets,
+                    dayStart,
+                    dayEnd,
+                    start,
+                    end
+                )
             }
         }
 
-        if (activeActivities.isNotEmpty() && sessionStart != null) {
-            addDashboardIntervalToHours(
-                buckets,
-                dayStart,
-                dayEnd,
-                sessionStart!!,
-                dayEnd
-            )
-        }
+        DashboardHourlyAppUsage(
+            packageName = packageName,
+            appName = labelsByPackage[packageName]?.name ?: packageName,
+            color = getDashboardAppColor(packageName),
+            hourlyUsage = buckets
+        )
     }
-
-    return buckets
 }
 
 private fun getDashboardAppUsage(
@@ -1593,7 +1644,7 @@ fun DashboardScreen(
     }
 
     val dashboardHourlyData by produceState(
-        initialValue = LongArray(24),
+        initialValue = emptyList<DashboardHourlyAppUsage>(),
         key1 = selectedApps,
         key2 = dashboardRefreshTick,
         key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
@@ -1932,7 +1983,10 @@ fun DashboardScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    val maxHourUsage = dashboardHourlyData.maxOrNull() ?: 0L
+                    val hourlyTotals = LongArray(24) { hour ->
+                        dashboardHourlyData.sumOf { it.hourlyUsage[hour] }
+                    }
+                    val maxHourUsage = hourlyTotals.maxOrNull() ?: 0L
                     val hourScrollState = rememberScrollState()
 
                     Row(
@@ -1942,14 +1996,14 @@ fun DashboardScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.Bottom
                     ) {
-                        dashboardHourlyData.forEachIndexed { hour, millis ->
+                        hourlyTotals.forEachIndexed { hour, totalMillis ->
                             Column(
                                 modifier = Modifier.width(32.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = if (millis > 0L) {
-                                        formatUsageTime(millis)
+                                    text = if (totalMillis > 0L) {
+                                        formatUsageTime(totalMillis)
                                     } else {
                                         ""
                                     },
@@ -1970,20 +2024,27 @@ fun DashboardScreen(
                                         ),
                                     contentAlignment = Alignment.BottomCenter
                                 ) {
-                                    if (millis > 0L && maxHourUsage > 0L) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(
-                                                    (112f *
-                                                            (millis.toFloat() / maxHourUsage.toFloat())
-                                                                .coerceIn(0f, 1f)).dp
-                                                )
-                                                .background(
-                                                    Color(0xFF1769E0),
-                                                    RoundedCornerShape(8.dp)
-                                                )
-                                        )
+                                    if (totalMillis > 0L && maxHourUsage > 0L) {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalArrangement = Arrangement.Bottom
+                                        ) {
+                                            dashboardHourlyData.forEach { app ->
+                                                val millis = app.hourlyUsage[hour]
+                                                if (millis > 0L) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(
+                                                                (112f *
+                                                                        (millis.toFloat() / maxHourUsage.toFloat())
+                                                                            .coerceIn(0f, 1f)).dp
+                                                            )
+                                                            .background(app.color)
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 
@@ -1998,10 +2059,38 @@ fun DashboardScreen(
                         }
                     }
 
+                    if (dashboardHourlyData.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            dashboardHourlyData.forEach { app ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(app.color, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = app.appName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF737782),
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
-                        text = "Scroll horizontally to view all hours.",
+                        text = "Each color represents one tracked app.",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF9A9DA5)
                     )
