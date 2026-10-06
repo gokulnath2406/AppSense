@@ -1126,6 +1126,10 @@ fun AppSenseApp() {
                 onStats = {
                     currentScreen =
                         "stats"
+                },
+
+                onNameChanged = { newName ->
+                    userName = newName
                 }
             )
         }
@@ -1391,7 +1395,8 @@ fun DashboardScreen(
     context: Context,
     savedName: String,
     onAddApp: () -> Unit,
-    onStats: () -> Unit
+    onStats: () -> Unit,
+    onNameChanged: (String) -> Unit
 ) {
 
     val selectedApps = remember {
@@ -1419,6 +1424,18 @@ fun DashboardScreen(
         ).format(Date())
     }
 
+    var showMenu by remember {
+        mutableStateOf(false)
+    }
+
+    var showChangeNameDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var editedName by remember(savedName) {
+        mutableStateOf(savedName)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1435,11 +1452,69 @@ fun DashboardScreen(
             // -------------------------------------------------
             // HEADER
             // -------------------------------------------------
-            Text(
-                text = dateText.uppercase(Locale.getDefault()),
-                style = MaterialTheme.typography.labelMedium,
-                color = Color(0xFF747985)
-            )
+            Box(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = 48.dp)
+                ) {
+                    Text(
+                        text = dateText.uppercase(Locale.getDefault()),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF747985)
+                    )
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .height(42.dp)
+                        .width(42.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.White,
+                    tonalElevation = 2.dp
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        IconButton(
+                            onClick = { showMenu = true }
+                        ) {
+                            Text(
+                                text = "⋯",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = Color(0xFF4F535C)
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            shape = RoundedCornerShape(14.dp),
+                            containerColor = Color(0xFFF7F8FA),
+                            tonalElevation = 0.dp,
+                            shadowElevation = 4.dp
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Change name",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                },
+                                onClick = {
+                                    editedName = savedName
+                                    showMenu = false
+                                    showChangeNameDialog = true
+                                }
+                            )
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -1449,7 +1524,12 @@ fun DashboardScreen(
                 } else {
                     "Good to see you"
                 },
-                style = MaterialTheme.typography.headlineMedium
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(end = 58.dp),
+                style = MaterialTheme.typography.headlineMedium,
+                maxLines = 2,
+                softWrap = true
             )
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -1661,6 +1741,68 @@ fun DashboardScreen(
                     color = Color(0xFF737782)
                 )
             }
+        }
+
+        if (showChangeNameDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showChangeNameDialog = false
+                },
+                containerColor = Color(0xFFF7F8FA),
+                tonalElevation = 0.dp,
+                title = {
+                    Text(
+                        text = "Change your name",
+                        color = Color(0xFF16181D)
+                    )
+                },
+                text = {
+                    OutlinedTextField(
+                        modifier = Modifier.fillMaxWidth(),
+                        value = editedName,
+                        onValueChange = { editedName = it },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        placeholder = {
+                            Text(
+                                "Enter your name",
+                                color = Color(0xFF858993)
+                            )
+                        }
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = editedName.trim().isNotEmpty(),
+                        onClick = {
+                            val finalName = editedName.trim()
+
+                            context
+                                .getSharedPreferences(
+                                    "appsense_preferences",
+                                    Context.MODE_PRIVATE
+                                )
+                                .edit()
+                                .putString("user_name", finalName)
+                                .apply()
+
+                            onNameChanged(finalName)
+                            showChangeNameDialog = false
+                        }
+                    ) {
+                        Text("Save")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showChangeNameDialog = false
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }
@@ -2120,22 +2262,12 @@ fun AddedAppStatsScreen(
                                 today
                             )
 
-                        val sessionCount =
-                            getUsageSessions(
-                                context,
-                                packageName,
-                                today
-                            ).size
-
                         AppUsageCard(
                             name =
                                 name,
 
                             usageMillis =
                                 usage,
-
-                            sessionCount =
-                                sessionCount,
 
                             onClick = {
                                 onAppClick(
@@ -2158,7 +2290,6 @@ fun AddedAppStatsScreen(
 fun AppUsageCard(
     name: String,
     usageMillis: Long,
-    sessionCount: Int,
     onClick: () -> Unit
 ) {
 
@@ -2211,16 +2342,6 @@ fun AppUsageCard(
                 )
 
                 Spacer(modifier = Modifier.height(3.dp))
-
-                Text(
-                    text =
-                        if (sessionCount == 1) {
-                            "1 session today"
-                        } else {
-                            "$sessionCount sessions today"
-                        },
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
 
             Column(
