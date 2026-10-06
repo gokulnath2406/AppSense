@@ -26,8 +26,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -663,6 +666,160 @@ private fun getAppUsageForDate(
     }
 
     return totalUsage
+}
+
+/* =========================================================
+   DASHBOARD CHART DATA
+   Read-only dashboard aggregation. Existing usage/session
+   functions are intentionally left unchanged.
+   ========================================================= */
+
+private fun addDashboardIntervalToHours(
+    buckets: LongArray,
+    dayStart: Long,
+    dayEnd: Long,
+    startTime: Long,
+    endTime: Long
+) {
+    val start = maxOf(startTime, dayStart)
+    val end = minOf(endTime, dayEnd)
+
+    if (end <= start) return
+
+    var cursor = start
+
+    while (cursor < end) {
+        val hourIndex =
+            ((cursor - dayStart) / (60L * 60L * 1000L))
+                .toInt()
+                .coerceIn(0, 23)
+
+        val hourStart =
+            dayStart + hourIndex * 60L * 60L * 1000L
+
+        val hourEnd =
+            minOf(
+                hourStart + 60L * 60L * 1000L,
+                dayEnd
+            )
+
+        val overlapEnd = minOf(end, hourEnd)
+
+        if (overlapEnd > cursor) {
+            buckets[hourIndex] += overlapEnd - cursor
+        }
+
+        cursor = overlapEnd
+    }
+}
+
+private fun getDashboardHourlyUsage(
+    context: Context,
+    packageNames: Set<String>,
+    date: Calendar
+): LongArray {
+
+    val buckets = LongArray(24)
+    val dayStart = getDayStart(date)
+    val dayEnd = minOf(
+        getDayEnd(date),
+        System.currentTimeMillis()
+    )
+
+    if (packageNames.isEmpty() || dayEnd <= dayStart) {
+        return buckets
+    }
+
+    val usageManager =
+        context.getSystemService(
+            Context.USAGE_STATS_SERVICE
+        ) as UsageStatsManager
+
+    packageNames.forEach { packageName ->
+        val queryStart = dayStart - 24L * 60L * 60L * 1000L
+        val events = usageManager.queryEvents(queryStart, dayEnd)
+        val event = UsageEvents.Event()
+        val activeActivities = mutableSetOf<String>()
+        var sessionStart: Long? = null
+
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+
+            if (event.packageName != packageName) continue
+
+            val activityName = event.className ?: ""
+
+            when (event.eventType) {
+                foregroundEvent() -> {
+                    val wasEmpty = activeActivities.isEmpty()
+                    activeActivities.add(activityName)
+
+                    if (wasEmpty && event.timeStamp >= dayStart) {
+                        sessionStart = event.timeStamp
+                    }
+                }
+
+                backgroundEvent() -> {
+                    activeActivities.remove(activityName)
+
+                    if (activeActivities.isEmpty() && sessionStart != null) {
+                        addDashboardIntervalToHours(
+                            buckets,
+                            dayStart,
+                            dayEnd,
+                            sessionStart!!,
+                            event.timeStamp
+                        )
+                        sessionStart = null
+                    }
+                }
+            }
+
+            if (
+                event.timeStamp < dayStart &&
+                activeActivities.isNotEmpty()
+            ) {
+                sessionStart = dayStart
+            }
+        }
+
+        if (activeActivities.isNotEmpty() && sessionStart != null) {
+            addDashboardIntervalToHours(
+                buckets,
+                dayStart,
+                dayEnd,
+                sessionStart!!,
+                dayEnd
+            )
+        }
+    }
+
+    return buckets
+}
+
+private fun getDashboardAppUsage(
+    context: Context,
+    packageNames: Set<String>,
+    date: Calendar
+): List<AppUsage> {
+    if (packageNames.isEmpty()) return emptyList()
+
+    val installedApps = getInstalledApps(context)
+    val labelsByPackage = installedApps.associateBy { it.packageName }
+
+    return packageNames
+        .map { packageName ->
+            AppUsage(
+                name = labelsByPackage[packageName]?.name ?: packageName,
+                packageName = packageName,
+                usageMillis = getAppUsageForDate(
+                    context,
+                    packageName,
+                    date
+                )
+            )
+        }
+        .sortedByDescending { it.usageMillis }
 }
 
 /* =========================================================
@@ -1407,11 +1564,44 @@ fun DashboardScreen(
         Calendar.getInstance()
     }
 
-    val totalUsage = remember(selectedApps) {
-        selectedApps.sumOf { packageName ->
-            getAppUsageForDate(
+    var dashboardRefreshTick by remember {
+        mutableIntStateOf(0)
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L)
+            dashboardRefreshTick++
+        }
+    }
+
+    val totalUsage by produceState(
+        initialValue = 0L,
+        key1 = selectedApps,
+        key2 = dashboardRefreshTick,
+        key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
+    ) {
+        value = withContext(Dispatchers.IO) {
+            selectedApps.sumOf { packageName ->
+                getAppUsageForDate(
+                    context,
+                    packageName,
+                    today
+                )
+            }
+        }
+    }
+
+    val dashboardHourlyData by produceState(
+        initialValue = LongArray(24),
+        key1 = selectedApps,
+        key2 = dashboardRefreshTick,
+        key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
+    ) {
+        value = withContext(Dispatchers.IO) {
+            getDashboardHourlyUsage(
                 context,
-                packageName,
+                selectedApps,
                 today
             )
         }
@@ -1446,6 +1636,7 @@ fun DashboardScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp, vertical = 20.dp)
         ) {
 
@@ -1711,6 +1902,112 @@ fun DashboardScreen(
                 )
             }
 
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // -------------------------------------------------
+            // HOURLY TIMELINE — 0 TO 23
+            // -------------------------------------------------
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp)
+                ) {
+                    Text(
+                        text = "HOURLY USAGE",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF858993)
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "Today · 24 hours",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFF16181D)
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    val maxHourUsage = dashboardHourlyData.maxOrNull() ?: 0L
+                    val hourScrollState = rememberScrollState()
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(hourScrollState),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        dashboardHourlyData.forEachIndexed { hour, millis ->
+                            Column(
+                                modifier = Modifier.width(32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = if (millis > 0L) {
+                                        formatUsageTime(millis)
+                                    } else {
+                                        ""
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF737782),
+                                    maxLines = 1
+                                )
+
+                                Spacer(modifier = Modifier.height(5.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .width(22.dp)
+                                        .height(112.dp)
+                                        .background(
+                                            Color(0xFFE9EBEF),
+                                            RoundedCornerShape(8.dp)
+                                        ),
+                                    contentAlignment = Alignment.BottomCenter
+                                ) {
+                                    if (millis > 0L && maxHourUsage > 0L) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(
+                                                    (112f *
+                                                            (millis.toFloat() / maxHourUsage.toFloat())
+                                                                .coerceIn(0f, 1f)).dp
+                                                )
+                                                .background(
+                                                    Color(0xFF1769E0),
+                                                    RoundedCornerShape(8.dp)
+                                                )
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Text(
+                                    text = String.format(Locale.getDefault(), "%02d", hour),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF737782)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "Scroll horizontally to view all hours.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF9A9DA5)
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
 
             // -------------------------------------------------
@@ -1742,68 +2039,68 @@ fun DashboardScreen(
                 )
             }
         }
+    }
 
-        if (showChangeNameDialog) {
-            AlertDialog(
-                onDismissRequest = {
-                    showChangeNameDialog = false
-                },
-                containerColor = Color(0xFFF7F8FA),
-                tonalElevation = 0.dp,
-                title = {
-                    Text(
-                        text = "Change your name",
-                        color = Color(0xFF16181D)
-                    )
-                },
-                text = {
-                    OutlinedTextField(
-                        modifier = Modifier.fillMaxWidth(),
-                        value = editedName,
-                        onValueChange = { editedName = it },
-                        singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
-                        placeholder = {
-                            Text(
-                                "Enter your name",
-                                color = Color(0xFF858993)
+    if (showChangeNameDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showChangeNameDialog = false
+            },
+            containerColor = Color(0xFFF7F8FA),
+            tonalElevation = 0.dp,
+            title = {
+                Text(
+                    text = "Change your name",
+                    color = Color(0xFF16181D)
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    modifier = Modifier.fillMaxWidth(),
+                    value = editedName,
+                    onValueChange = { editedName = it },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    placeholder = {
+                        Text(
+                            "Enter your name",
+                            color = Color(0xFF858993)
+                        )
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = editedName.trim().isNotEmpty(),
+                    onClick = {
+                        val finalName = editedName.trim()
+
+                        context
+                            .getSharedPreferences(
+                                "appsense_preferences",
+                                Context.MODE_PRIVATE
                             )
-                        }
-                    )
-                },
-                confirmButton = {
-                    TextButton(
-                        enabled = editedName.trim().isNotEmpty(),
-                        onClick = {
-                            val finalName = editedName.trim()
+                            .edit()
+                            .putString("user_name", finalName)
+                            .apply()
 
-                            context
-                                .getSharedPreferences(
-                                    "appsense_preferences",
-                                    Context.MODE_PRIVATE
-                                )
-                                .edit()
-                                .putString("user_name", finalName)
-                                .apply()
-
-                            onNameChanged(finalName)
-                            showChangeNameDialog = false
-                        }
-                    ) {
-                        Text("Save")
+                        onNameChanged(finalName)
+                        showChangeNameDialog = false
                     }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            showChangeNameDialog = false
-                        }
-                    ) {
-                        Text("Cancel")
-                    }
+                ) {
+                    Text("Save")
                 }
-            )
-        }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showChangeNameDialog = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
