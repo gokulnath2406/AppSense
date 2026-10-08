@@ -210,7 +210,14 @@ class UsageMonitorService : Service() {
             sessionStartTime = 0L
 
             if (isExpanded) {
-                collapseFloatingTimer()
+                // Window/View operations must run on the main thread.
+                // Keep the existing collapse logic unchanged; only dispatch
+                // the UI operation safely to the view's main-thread queue.
+                overlayView?.post {
+                    if (isExpanded) {
+                        collapseFloatingTimer()
+                    }
+                }
             }
 
             hideFloatingTimer()
@@ -403,6 +410,12 @@ class UsageMonitorService : Service() {
         var initialTouchY = 0f
         var initialWindowX = 0
         var initialWindowY = 0
+        var isDragging = false
+
+        val touchSlop =
+            android.view.ViewConfiguration
+                .get(this)
+                .scaledTouchSlop
 
         container.setOnTouchListener { view, event ->
 
@@ -413,6 +426,7 @@ class UsageMonitorService : Service() {
                     initialTouchY = event.rawY
                     initialWindowX = params.x
                     initialWindowY = params.y
+                    isDragging = false
                     true
                 }
 
@@ -424,62 +438,97 @@ class UsageMonitorService : Service() {
                     }
 
                     val deltaX =
-                        (event.rawX - initialTouchX).toInt()
+                        event.rawX - initialTouchX
 
                     val deltaY =
-                        (event.rawY - initialTouchY).toInt()
+                        event.rawY - initialTouchY
 
-                    val screenWidth =
-                        resources.displayMetrics.widthPixels
+                    // Ignore tiny finger movements.
+                    // Start dragging only after Android's standard
+                    // touch-slop distance is crossed.
+                    if (!isDragging) {
 
-                    val screenHeight =
-                        resources.displayMetrics.heightPixels
+                        val distanceSquared =
+                            deltaX * deltaX +
+                                    deltaY * deltaY
 
-                    val currentWidth =
-                        view.width.takeIf { it > 0 } ?: 1
+                        val touchSlopSquared =
+                            touchSlop * touchSlop
 
-                    val minX = edgeMargin
-                    val maxX =
-                        max(
-                            edgeMargin,
-                            screenWidth -
-                                    currentWidth -
-                                    edgeMargin
-                        )
+                        if (
+                            distanceSquared >
+                            touchSlopSquared
+                        ) {
+                            isDragging = true
+                        }
+                    }
 
-                    val minY = edgeMargin
-                    val maxY =
-                        max(
-                            edgeMargin,
-                            screenHeight -
-                                    height -
-                                    edgeMargin
-                        )
+                    if (isDragging) {
 
-                    params.x =
-                        min(
+                        val deltaXInt =
+                            deltaX.toInt()
+
+                        val deltaYInt =
+                            deltaY.toInt()
+
+                        val screenWidth =
+                            resources.displayMetrics.widthPixels
+
+                        val screenHeight =
+                            resources.displayMetrics.heightPixels
+
+                        val currentWidth =
+                            view.width
+                                .takeIf { it > 0 }
+                                ?: 1
+
+                        val minX = edgeMargin
+                        val maxX =
                             max(
-                                initialWindowX + deltaX,
-                                minX
-                            ),
-                            maxX
-                        )
+                                edgeMargin,
+                                screenWidth -
+                                        currentWidth -
+                                        edgeMargin
+                            )
 
-                    params.y =
-                        min(
+                        val minY = edgeMargin
+                        val maxY =
                             max(
-                                initialWindowY + deltaY,
-                                minY
-                            ),
-                            maxY
-                        )
+                                edgeMargin,
+                                screenHeight -
+                                        height -
+                                        edgeMargin
+                            )
 
-                    try {
-                        windowManager.updateViewLayout(
-                            view,
-                            params
-                        )
-                    } catch (_: Exception) {
+                        params.x =
+                            min(
+                                max(
+                                    initialWindowX +
+                                            deltaXInt,
+                                    minX
+                                ),
+                                maxX
+                            )
+
+                        params.y =
+                            min(
+                                max(
+                                    initialWindowY +
+                                            deltaYInt,
+                                    minY
+                                ),
+                                maxY
+                            )
+
+                        try {
+                            windowManager.updateViewLayout(
+                                view,
+                                params
+                            )
+                        } catch (_: Exception) {
+                            // Keep overlay alive if the window
+                            // temporarily cannot be updated.
+                        }
                     }
 
                     true
@@ -487,14 +536,24 @@ class UsageMonitorService : Service() {
 
                 MotionEvent.ACTION_UP -> {
 
-                    if (!isExpanded) {
+                    // Expand ONLY for a tap.
+                    // A real drag must never expand.
+                    if (
+                        !isExpanded &&
+                        !isDragging
+                    ) {
                         expandFloatingTimer()
                     }
+
+                    isDragging = false
 
                     true
                 }
 
-                MotionEvent.ACTION_CANCEL -> true
+                MotionEvent.ACTION_CANCEL -> {
+                    isDragging = false
+                    true
+                }
 
                 else -> false
             }

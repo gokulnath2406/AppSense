@@ -1,3 +1,4 @@
+
 package com.appsense.app
 
 import android.app.AppOpsManager
@@ -33,6 +34,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -46,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -55,6 +58,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
@@ -67,7 +71,8 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import androidx.compose.foundation.shape.CircleShape
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class AppItem(
     val name: String,
@@ -138,6 +143,15 @@ private fun hasOverlayPermission(
 ): Boolean {
 
     return Settings.canDrawOverlays(context)
+}
+
+private fun hasNotificationAccess(
+    context: Context
+): Boolean {
+
+    return NotificationManagerCompat
+        .getEnabledListenerPackages(context)
+        .contains(context.packageName)
 }
 
 /* =========================================================
@@ -964,6 +978,12 @@ fun AppSenseApp() {
         )
     }
 
+    var notificationAccessGranted by remember {
+        mutableStateOf(
+            hasNotificationAccess(context)
+        )
+    }
+
     var showNameDialog by remember {
         mutableStateOf(false)
     }
@@ -990,15 +1010,19 @@ fun AppSenseApp() {
         mutableStateOf(false)
     }
 
-    var splashHandled by remember {
+    // Persist across configuration changes (for example, phone rotation).
+    // This prevents the splash flow and service-start flow from running again.
+    var splashHandled by rememberSaveable {
         mutableStateOf(false)
     }
 
-    var currentScreen by remember {
+    // Keep the current navigation screen across rotation.
+    var currentScreen by rememberSaveable {
         mutableStateOf("dashboard")
     }
 
-    var detailPackage by remember {
+    // Keep the selected app detail target across rotation.
+    var detailPackage by rememberSaveable {
         mutableStateOf<String?>(null)
     }
 
@@ -1024,6 +1048,11 @@ fun AppSenseApp() {
 
                     overlayPermissionGranted =
                         hasOverlayPermission(
+                            context
+                        )
+
+                    notificationAccessGranted =
+                        hasNotificationAccess(
                             context
                         )
                 }
@@ -1056,12 +1085,14 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted
+        overlayPermissionGranted,
+        notificationAccessGranted
     ) {
 
         if (
             permissionGranted &&
             overlayPermissionGranted &&
+            notificationAccessGranted &&
             !splashHandled
         ) {
 
@@ -1114,12 +1145,14 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted
+        overlayPermissionGranted,
+        notificationAccessGranted
     ) {
 
         if (
             permissionGranted &&
             overlayPermissionGranted &&
+            notificationAccessGranted &&
             installedAppsCache == null
         ) {
 
@@ -1134,11 +1167,16 @@ fun AppSenseApp() {
         }
     }
 
-    if (!permissionGranted || !overlayPermissionGranted) {
+    if (
+        !permissionGranted ||
+        !overlayPermissionGranted ||
+        !notificationAccessGranted
+    ) {
 
         PermissionSetupScreen(
             usageAccessGranted = permissionGranted,
             overlayAccessGranted = overlayPermissionGranted,
+            notificationAccessGranted = notificationAccessGranted,
 
             onGrantUsageAccess = {
                 context.startActivity(
@@ -1162,6 +1200,14 @@ fun AppSenseApp() {
 
                 context.startActivity(
                     intent
+                )
+            },
+
+            onGrantNotificationAccess = {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS
+                    )
                 )
             }
         )
@@ -1309,6 +1355,11 @@ fun AppSenseApp() {
                         "dashboard"
                 }
 
+                "goals" -> {
+                    currentScreen =
+                        "dashboard"
+                }
+
                 "add_app" -> {
                     currentScreen =
                         "dashboard"
@@ -1338,6 +1389,11 @@ fun AppSenseApp() {
 
                 onNameChanged = { newName ->
                     userName = newName
+                },
+
+                onGoals = {
+                    currentScreen =
+                        "goals"
                 }
             )
         }
@@ -1405,6 +1461,282 @@ fun AppSenseApp() {
 }
 
 /* =========================================================
+   GOALS
+   ========================================================= */
+
+data class UserGoal(
+    val id: Long,
+    val title: String
+)
+
+private const val GOALS_PREF_KEY = "user_goals"
+private const val MAX_GOALS = 10
+
+private fun loadUserGoals(context: Context): List<UserGoal> {
+    val raw = context
+        .getSharedPreferences("appsense_preferences", Context.MODE_PRIVATE)
+        .getString(GOALS_PREF_KEY, "[]")
+        ?: "[]"
+
+    return try {
+        val array = JSONArray(raw)
+        buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val title = item.optString("title").trim()
+                if (title.isNotEmpty()) {
+                    add(
+                        UserGoal(
+                            id = item.optLong("id"),
+                            title = title
+                        )
+                    )
+                }
+            }
+        }.take(MAX_GOALS)
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveUserGoals(
+    context: Context,
+    goals: List<UserGoal>
+) {
+    val array = JSONArray()
+
+    goals.take(MAX_GOALS).forEach { goal ->
+        array.put(
+            JSONObject().apply {
+                put("id", goal.id)
+                put("title", goal.title)
+            }
+        )
+    }
+
+    context
+        .getSharedPreferences("appsense_preferences", Context.MODE_PRIVATE)
+        .edit()
+        .putString(GOALS_PREF_KEY, array.toString())
+        .apply()
+}
+
+@Composable
+private fun GoalsScreen(
+    context: Context,
+    onBack: () -> Unit
+) {
+    var goals by remember {
+        mutableStateOf(loadUserGoals(context))
+    }
+
+    var showAddDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var goalText by remember {
+        mutableStateOf("")
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .background(Color(0xFFF7F8FA))
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 22.dp, vertical = 20.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) {
+                Text("← Back")
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Text(
+                text = "${goals.size}/$MAX_GOALS",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color(0xFF747985)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = "Goals",
+            style = MaterialTheme.typography.headlineMedium,
+            color = Color(0xFF16181D)
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Text(
+            text = "Set personal goals you want AppSense to help you stay aware of.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = Color(0xFF6D717B)
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        if (goals.isEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "No goals yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFF16181D)
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Add a goal that matters to you.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF747985)
+                    )
+                }
+            }
+        } else {
+            goals.forEachIndexed { index, goal ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = Color.White,
+                    tonalElevation = 1.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 18.dp, end = 8.dp, top = 14.dp, bottom = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = goal.title,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color(0xFF16181D)
+                        )
+
+                        TextButton(
+                            onClick = {
+                                goals = goals.filterNot { it.id == goal.id }
+                                saveUserGoals(context, goals)
+                            }
+                        ) {
+                            Text("Delete")
+                        }
+                    }
+                }
+
+                if (index != goals.lastIndex) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        Button(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            shape = RoundedCornerShape(18.dp),
+            enabled = goals.size < MAX_GOALS,
+            onClick = {
+                goalText = ""
+                showAddDialog = true
+            }
+        ) {
+            Text(
+                if (goals.size < MAX_GOALS) "＋ Add goal" else "10 goals added"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = if (goals.size < MAX_GOALS) {
+                "You can add up to $MAX_GOALS goals."
+            } else {
+                "Maximum of $MAX_GOALS goals reached. Delete one to add another."
+            },
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF747985)
+        )
+    }
+
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showAddDialog = false
+            },
+            containerColor = Color(0xFFF7F8FA),
+            tonalElevation = 0.dp,
+            title = {
+                Text("Add goal")
+            },
+            text = {
+                OutlinedTextField(
+                    modifier = Modifier.fillMaxWidth(),
+                    value = goalText,
+                    onValueChange = {
+                        goalText = it
+                    },
+                    singleLine = false,
+                    maxLines = 3,
+                    label = {
+                        Text("Your goal")
+                    },
+                    placeholder = {
+                        Text("e.g. Spend less time on Instagram")
+                    }
+                )
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showAddDialog = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = goalText.trim().isNotEmpty() && goals.size < MAX_GOALS,
+                    onClick = {
+                        val title = goalText.trim()
+                        if (title.isNotEmpty() && goals.size < MAX_GOALS) {
+                            val newGoal = UserGoal(
+                                id = System.currentTimeMillis(),
+                                title = title
+                            )
+                            goals = (goals + newGoal).take(MAX_GOALS)
+                            saveUserGoals(context, goals)
+                            showAddDialog = false
+                        }
+                    }
+                ) {
+                    Text("Add")
+                }
+            }
+        )
+    }
+}
+
+/* =========================================================
    SPLASH SCREEN
    ========================================================= */
 
@@ -1447,12 +1779,16 @@ private fun AppSenseSplashScreen() {
 fun PermissionSetupScreen(
     usageAccessGranted: Boolean,
     overlayAccessGranted: Boolean,
+    notificationAccessGranted: Boolean,
     onGrantUsageAccess: () -> Unit,
-    onGrantOverlayAccess: () -> Unit
+    onGrantOverlayAccess: () -> Unit,
+    onGrantNotificationAccess: () -> Unit
 ) {
 
     val allGranted =
-        usageAccessGranted && overlayAccessGranted
+        usageAccessGranted &&
+                overlayAccessGranted &&
+                notificationAccessGranted
 
     Column(
         modifier = Modifier
@@ -1501,6 +1837,18 @@ fun PermissionSetupScreen(
         )
 
         Spacer(
+            modifier = Modifier.height(16.dp)
+        )
+
+        PermissionCard(
+            title = "Notification Access",
+            description = "Allow AppSense to access notifications for future awareness and goal features.",
+            granted = notificationAccessGranted,
+            buttonText = "Allow Notification Access",
+            onClick = onGrantNotificationAccess
+        )
+
+        Spacer(
             modifier = Modifier.height(28.dp)
         )
 
@@ -1513,7 +1861,7 @@ fun PermissionSetupScreen(
             }
         ) {
             Text(
-                if (allGranted) "Continue" else "Complete both accesses"
+                if (allGranted) "Continue" else "Complete all accesses"
             )
         }
     }
@@ -1604,7 +1952,8 @@ fun DashboardScreen(
     savedName: String,
     onAddApp: () -> Unit,
     onStats: () -> Unit,
-    onNameChanged: (String) -> Unit
+    onNameChanged: (String) -> Unit,
+    onGoals: () -> Unit
 ) {
 
     val selectedApps = remember {
@@ -1751,6 +2100,19 @@ fun DashboardScreen(
                                     editedName = savedName
                                     showMenu = false
                                     showChangeNameDialog = true
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Goals",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onGoals()
                                 }
                             )
                         }
