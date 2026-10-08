@@ -15,8 +15,15 @@
     <!-- Permission required to show floating timer over other apps -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Start monitoring after device reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Android 13+ notification permission -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -28,6 +35,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AppSense">
 
+        <!-- Main App Activity -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -42,6 +50,7 @@
 
         </activity>
 
+        <!-- App usage monitoring + floating timer -->
         <service
             android:name=".UsageMonitorService"
             android:exported="false"
@@ -65,6 +74,18 @@
             </intent-filter>
 
         </service>
+
+        <!-- Restart monitoring after device reboot -->
+        <receiver
+            android:name=".AppSenseBootReceiver"
+            android:enabled="true"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+
+        </receiver>
 
     </application>
 

@@ -100,6 +100,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Android 13+: allow the foreground-service notification to be shown.
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                1002
+            )
+        }
+
         // Keep Android Status Bar visible and make its
         // time / network / battery icons clearly visible.
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -3285,15 +3298,41 @@ fun DailyDetail(
             )
             .padding(24.dp)
     ) {
+        val isToday = run {
+            val today = Calendar.getInstance()
+            today.get(Calendar.YEAR) == date.get(Calendar.YEAR) &&
+                    today.get(Calendar.DAY_OF_YEAR) == date.get(Calendar.DAY_OF_YEAR)
+        }
+
+        val dateLabel = SimpleDateFormat(
+            "d MMM yyyy",
+            Locale.getDefault()
+        ).format(date.time)
+
+        val usageTitle =
+            if (isToday) {
+                "Today's usage"
+            } else {
+                "Usage on $dateLabel"
+            }
+
+        val displayAppName =
+            try {
+                val info = context.packageManager.getApplicationInfo(packageName, 0)
+                context.packageManager.getApplicationLabel(info).toString()
+            } catch (_: Exception) {
+                packageName
+            }
+
         Text(
-            text = "Today's usage",
+            text = usageTitle,
             style = MaterialTheme.typography.titleMedium
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "Total time spent in $packageName",
+            text = "Total time spent in $displayAppName",
             style = MaterialTheme.typography.bodySmall
         )
 
