@@ -111,7 +111,12 @@ class MainActivity : ComponentActivity() {
         ).isAppearanceLightStatusBars = true
 
         setContent {
-            AppSenseTheme {
+            // Keep AppSense on a light Material theme so hardcoded light UI
+            // colors and Material components remain readable in device dark mode.
+            AppSenseTheme(
+                darkTheme = false,
+                dynamicColor = false
+            ) {
                 AppSenseApp()
             }
         }
@@ -347,161 +352,21 @@ private fun getUsageSessions(
     packageName: String,
     date: Calendar
 ): List<UsageSession> {
+    val dayStart = getDayStart(date)
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
+    if (dayEnd <= dayStart) return emptyList()
 
-    val dayStart =
-        getDayStart(date)
-
-    val dayEnd =
-        getDayEnd(date)
-
-    val now =
-        System.currentTimeMillis()
-
-    val queryEnd =
-        minOf(
-            dayEnd,
-            now
+    return AppSenseUsageCalculator.getIntervals(
+        context = context,
+        packageName = packageName,
+        dayStart = dayStart,
+        dayEnd = dayEnd
+    ).map { interval ->
+        UsageSession(
+            startTime = interval.startTime,
+            endTime = interval.endTime,
+            durationMillis = interval.endTime - interval.startTime
         )
-
-    if (
-        queryEnd <= dayStart
-    ) {
-        return emptyList()
-    }
-
-    val usageManager =
-        context.getSystemService(
-            Context.USAGE_STATS_SERVICE
-        ) as UsageStatsManager
-
-    val events =
-        usageManager.queryEvents(
-            dayStart,
-            queryEnd
-        )
-
-    val event =
-        UsageEvents.Event()
-
-    val sessions =
-        mutableListOf<UsageSession>()
-
-    var openTime:
-            Long? = null
-
-    while (
-        events.hasNextEvent()
-    ) {
-
-        events.getNextEvent(event)
-
-        if (
-            event.packageName !=
-            packageName
-        ) {
-            continue
-        }
-
-        when (
-            event.eventType
-        ) {
-
-            foregroundEvent() -> {
-
-                if (
-                    openTime == null
-                ) {
-
-                    openTime =
-                        event.timeStamp
-                }
-            }
-
-            backgroundEvent() -> {
-
-                val start =
-                    openTime
-
-                if (
-                    start != null &&
-                    event.timeStamp > start
-                ) {
-
-                    val actualStart =
-                        maxOf(
-                            start,
-                            dayStart
-                        )
-
-                    val actualEnd =
-                        minOf(
-                            event.timeStamp,
-                            dayEnd
-                        )
-
-                    if (
-                        actualEnd >
-                        actualStart
-                    ) {
-
-                        sessions.add(
-                            UsageSession(
-                                startTime =
-                                    actualStart,
-
-                                endTime =
-                                    actualEnd,
-
-                                durationMillis =
-                                    actualEnd -
-                                            actualStart
-                            )
-                        )
-                    }
-
-                    openTime =
-                        null
-                }
-            }
-        }
-    }
-
-    if (
-        openTime != null
-    ) {
-
-        val actualStart =
-            maxOf(
-                openTime!!,
-                dayStart
-            )
-
-        val actualEnd =
-            queryEnd
-
-        if (
-            actualEnd >
-            actualStart
-        ) {
-
-            sessions.add(
-                UsageSession(
-                    startTime =
-                        actualStart,
-
-                    endTime =
-                        actualEnd,
-
-                    durationMillis =
-                        actualEnd -
-                                actualStart
-                )
-            )
-        }
-    }
-
-    return sessions.sortedBy {
-        it.startTime
     }
 }
 
@@ -514,172 +379,21 @@ private fun getAppUsageForDate(
     packageName: String,
     date: Calendar
 ): Long {
+    val dayStart = getDayStart(date)
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
+    if (dayEnd <= dayStart) return 0L
 
-    val dayStart =
-        getDayStart(date)
-
-    val dayEnd =
-        minOf(
-            getDayEnd(date),
-            System.currentTimeMillis()
-        )
-
-    if (
-        dayEnd <= dayStart
-    ) {
-        return 0L
-    }
-
-    val usageManager =
-        context.getSystemService(
-            Context.USAGE_STATS_SERVICE
-        ) as UsageStatsManager
-
-    val queryStart =
-        dayStart -
-                (
-                        24L *
-                                60L *
-                                60L *
-                                1000L
-                        )
-
-    val events =
-        usageManager.queryEvents(
-            queryStart,
-            dayEnd
-        )
-
-    val event =
-        UsageEvents.Event()
-
-    val activeActivities =
-        mutableSetOf<String>()
-
-    var sessionStart:
-            Long? = null
-
-    var totalUsage =
-        0L
-
-    while (
-        events.hasNextEvent()
-    ) {
-
-        events.getNextEvent(event)
-
-        if (
-            event.packageName !=
-            packageName
-        ) {
-            continue
-        }
-
-        val activityName =
-            event.className ?: ""
-
-        when (
-            event.eventType
-        ) {
-
-            foregroundEvent() -> {
-
-                val wasEmpty =
-                    activeActivities.isEmpty()
-
-                activeActivities.add(
-                    activityName
-                )
-
-                if (
-                    wasEmpty &&
-                    event.timeStamp >=
-                    dayStart
-                ) {
-
-                    sessionStart =
-                        event.timeStamp
-                }
-            }
-
-            backgroundEvent() -> {
-
-                activeActivities.remove(
-                    activityName
-                )
-
-                if (
-                    activeActivities.isEmpty() &&
-                    sessionStart != null
-                ) {
-
-                    val start =
-                        maxOf(
-                            sessionStart!!,
-                            dayStart
-                        )
-
-                    val end =
-                        minOf(
-                            event.timeStamp,
-                            dayEnd
-                        )
-
-                    if (
-                        end > start
-                    ) {
-
-                        totalUsage +=
-                            end - start
-                    }
-
-                    sessionStart =
-                        null
-                }
-            }
-        }
-
-        if (
-            event.timeStamp <
-            dayStart &&
-            activeActivities.isNotEmpty()
-        ) {
-
-            sessionStart =
-                dayStart
-        }
-    }
-
-    if (
-        activeActivities.isNotEmpty() &&
-        sessionStart != null
-    ) {
-
-        val start =
-            maxOf(
-                sessionStart!!,
-                dayStart
-            )
-
-        val end =
-            dayEnd
-
-        if (
-            end > start
-        ) {
-
-            totalUsage +=
-                end - start
-        }
-    }
-
-    return totalUsage
+    return AppSenseUsageCalculator.getIntervals(
+        context = context,
+        packageName = packageName,
+        dayStart = dayStart,
+        dayEnd = dayEnd
+    ).sumOf { it.endTime - it.startTime }
 }
 
 /* =========================================================
    DASHBOARD CHART DATA
-   Read-only dashboard aggregation. Existing usage/session
-   functions are intentionally left unchanged.
+   Hourly buckets are derived from the shared usage intervals.
    ========================================================= */
 
 private fun addDashboardIntervalToHours(
@@ -749,100 +463,31 @@ private fun getDashboardHourlyUsage(
     packageNames: Set<String>,
     date: Calendar
 ): List<DashboardHourlyAppUsage> {
-
     if (packageNames.isEmpty()) return emptyList()
 
     val dayStart = getDayStart(date)
-    val dayEnd = minOf(
-        getDayEnd(date),
-        System.currentTimeMillis()
-    )
-
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
     if (dayEnd <= dayStart) return emptyList()
 
-    val usageManager =
-        context.getSystemService(
-            Context.USAGE_STATS_SERVICE
-        ) as UsageStatsManager
-
-    val labelsByPackage =
-        getInstalledApps(context).associateBy { it.packageName }
+    val labelsByPackage = getInstalledApps(context).associateBy { it.packageName }
 
     return packageNames.map { packageName ->
         val buckets = LongArray(24)
+        val intervals = AppSenseUsageCalculator.getIntervals(
+            context = context,
+            packageName = packageName,
+            dayStart = dayStart,
+            dayEnd = dayEnd
+        )
 
-        // Query before midnight so an app already in the foreground
-        // at 00:00 is counted from the start of this day.
-        val queryStart = dayStart - 24L * 60L * 60L * 1000L
-        val events = usageManager.queryEvents(queryStart, dayEnd)
-        val event = UsageEvents.Event()
-
-        // Track each Activity independently. Android UsageEvents are
-        // Activity-level events, so one Boolean/openTime is not enough.
-        val activeActivities = mutableMapOf<String, Long>()
-        var packageSessionStart: Long? = null
-
-        while (events.hasNextEvent()) {
-            events.getNextEvent(event)
-
-            if (event.packageName != packageName) continue
-
-            val activityName = event.className ?: ""
-            val timestamp = event.timeStamp
-
-            when (event.eventType) {
-                foregroundEvent() -> {
-                    // Ignore duplicate resume events for the same Activity.
-                    if (!activeActivities.containsKey(activityName)) {
-                        val wasPackageInactive = activeActivities.isEmpty()
-                        activeActivities[activityName] = timestamp
-
-                        if (wasPackageInactive) {
-                            packageSessionStart = maxOf(timestamp, dayStart)
-                        }
-                    }
-                }
-
-                backgroundEvent(),
-                UsageEvents.Event.ACTIVITY_STOPPED -> {
-                    // Only close an Activity that we actually considered active.
-                    if (activeActivities.remove(activityName) != null &&
-                        activeActivities.isEmpty() &&
-                        packageSessionStart != null
-                    ) {
-                        val start = maxOf(packageSessionStart!!, dayStart)
-                        val end = minOf(timestamp, dayEnd)
-
-                        if (end > start) {
-                            addDashboardIntervalToHours(
-                                buckets,
-                                dayStart,
-                                dayEnd,
-                                start,
-                                end
-                            )
-                        }
-
-                        packageSessionStart = null
-                    }
-                }
-            }
-        }
-
-        // App is still active when the query ends.
-        if (activeActivities.isNotEmpty() && packageSessionStart != null) {
-            val start = maxOf(packageSessionStart!!, dayStart)
-            val end = dayEnd
-
-            if (end > start) {
-                addDashboardIntervalToHours(
-                    buckets,
-                    dayStart,
-                    dayEnd,
-                    start,
-                    end
-                )
-            }
+        intervals.forEach { interval ->
+            addDashboardIntervalToHours(
+                buckets = buckets,
+                dayStart = dayStart,
+                dayEnd = dayEnd,
+                startTime = interval.startTime,
+                endTime = interval.endTime
+            )
         }
 
         DashboardHourlyAppUsage(
@@ -1951,17 +1596,36 @@ fun DashboardScreen(
         loadSelectedApps(context)
     }
 
-    val today = remember {
-        Calendar.getInstance()
+    // Keep the dashboard date fresh when the Activity returns to the foreground,
+    // especially when the app remains alive across midnight.
+    var today by remember {
+        mutableStateOf(Calendar.getInstance())
     }
 
     var dashboardRefreshTick by remember {
         mutableIntStateOf(0)
     }
 
+    val lifecycleOwner =
+        androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                today = Calendar.getInstance()
+                dashboardRefreshTick++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L)
+            today = Calendar.getInstance()
             dashboardRefreshTick++
         }
     }
@@ -1998,11 +1662,11 @@ fun DashboardScreen(
         }
     }
 
-    val dateText = remember {
+    val dateText = remember(today) {
         SimpleDateFormat(
             "EEEE, d MMMM",
             Locale.getDefault()
-        ).format(Date())
+        ).format(today.time)
     }
 
     var showMenu by remember {
@@ -2994,12 +2658,19 @@ fun AddedAppStatsScreen(
                                 )
                                 .toString()
 
-                        val usage =
-                            getAppUsageForDate(
-                                context,
-                                packageName,
-                                today
-                            )
+                        val usage by produceState(
+                            initialValue = 0L,
+                            packageName,
+                            today.timeInMillis
+                        ) {
+                            value = withContext(Dispatchers.IO) {
+                                getAppUsageForDate(
+                                    context,
+                                    packageName,
+                                    today
+                                )
+                            }
+                        }
 
                         AppUsageCard(
                             name =
@@ -3263,8 +2934,14 @@ fun DailyDetail(
     date: Calendar
 ) {
 
-    val total = remember(packageName, date.timeInMillis) {
-        getAppUsageForDate(context, packageName, date)
+    val total by produceState(
+        initialValue = 0L,
+        packageName,
+        date.timeInMillis
+    ) {
+        value = withContext(Dispatchers.IO) {
+            getAppUsageForDate(context, packageName, date)
+        }
     }
 
     Column(
@@ -3276,15 +2953,41 @@ fun DailyDetail(
             )
             .padding(24.dp)
     ) {
+        val isToday = run {
+            val today = Calendar.getInstance()
+            today.get(Calendar.YEAR) == date.get(Calendar.YEAR) &&
+                    today.get(Calendar.DAY_OF_YEAR) == date.get(Calendar.DAY_OF_YEAR)
+        }
+
+        val dateLabel = SimpleDateFormat(
+            "d MMM yyyy",
+            Locale.getDefault()
+        ).format(date.time)
+
+        val usageTitle =
+            if (isToday) {
+                "Today's usage"
+            } else {
+                "Usage on $dateLabel"
+            }
+
+        val displayAppName =
+            try {
+                val info = context.packageManager.getApplicationInfo(packageName, 0)
+                context.packageManager.getApplicationLabel(info).toString()
+            } catch (_: Exception) {
+                packageName
+            }
+
         Text(
-            text = "Today's usage",
+            text = usageTitle,
             style = MaterialTheme.typography.titleMedium
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "Total time spent in $packageName",
+            text = "Total time spent in $displayAppName",
             style = MaterialTheme.typography.bodySmall
         )
 
@@ -3315,11 +3018,26 @@ fun HourlyDetail(
     date: Calendar
 ) {
 
-    val sessions = remember(packageName, date.timeInMillis) {
-        getHourlySessions(context, packageName, date)
+    val sessions by produceState<List<UsageSession>?>(
+        initialValue = null,
+        packageName,
+        date.timeInMillis
+    ) {
+        value = withContext(Dispatchers.IO) {
+            getHourlySessions(context, packageName, date)
+        }
     }
 
-    if (sessions.isEmpty()) {
+    if (sessions == null) {
+        Text(
+            text = "Loading usage sessions…",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(24.dp)
+        )
+        return
+    }
+
+    if (sessions!!.isEmpty()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3353,7 +3071,7 @@ fun HourlyDetail(
             )
         }
 
-        items(sessions) { session ->
+        items(sessions!!) { session ->
             UsageSessionCard(session)
         }
     }

@@ -53,6 +53,10 @@ class UsageMonitorService : Service() {
     private var sessionStartTime = 0L
 
     private var lastForegroundPackage: String? = null
+    // On service startup, reconstruct foreground state from a wider event window.
+    // Subsequent polling uses the short window to avoid repeatedly scanning history.
+    @Volatile
+    private var isForegroundStateInitialized = false
 
     @Volatile
     private var isExpanded = false
@@ -148,6 +152,12 @@ class UsageMonitorService : Service() {
             getSystemService(POWER_SERVICE) as PowerManager
 
         if (!powerManager.isInteractive) {
+            // The screen is off: do not retain a stale foreground package.
+            // Rebuild foreground state with the startup lookback when the
+            // screen becomes interactive again, so an already-open app can
+            // be detected without showing a ghost pill on the lock screen.
+            lastForegroundPackage = null
+            isForegroundStateInitialized = false
             currentPackage = null
             sessionStartTime = 0L
             hideFloatingTimer()
@@ -235,14 +245,22 @@ class UsageMonitorService : Service() {
         val endTime =
             System.currentTimeMillis()
 
-        val startTime =
-            endTime - 10_000L
+        // A restarted service may find the user already inside a tracked app.
+        // Its last RESUMED/foreground event can be much older than 10 seconds,
+        // so do one wider scan after startup, then return to lightweight polling.
+        val lookbackMillis = if (isForegroundStateInitialized) {
+            10_000L
+        } else {
+            2L * 60L * 60L * 1000L // 2 hours on the first check after service start
+        }
+        val startTime = (endTime - lookbackMillis).coerceAtLeast(0L)
 
         val usageEvents =
             usageStatsManager.queryEvents(
                 startTime,
                 endTime
             )
+        isForegroundStateInitialized = true
 
         val event =
             UsageEvents.Event()
@@ -992,92 +1010,21 @@ class UsageMonitorService : Service() {
         packageName: String,
         now: Long
     ): Long {
-
-        val calendar =
-            Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, 0)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-
-        val dayStart =
-            calendar.timeInMillis
-
-        val usageStatsManager =
-            getSystemService(
-                USAGE_STATS_SERVICE
-            ) as UsageStatsManager
-
-        val events =
-            usageStatsManager.queryEvents(
-                dayStart,
-                now
-            )
-
-        val event =
-            UsageEvents.Event()
-
-        var isForeground = false
-        var sessionStart = 0L
-        var total = 0L
-
-        while (events.hasNextEvent()) {
-
-            events.getNextEvent(event)
-
-            if (event.packageName != packageName) {
-                continue
-            }
-
-            when (event.eventType) {
-
-                UsageEvents.Event.MOVE_TO_FOREGROUND,
-                UsageEvents.Event.ACTIVITY_RESUMED -> {
-
-                    if (!isForeground) {
-                        isForeground = true
-                        sessionStart = event.timeStamp
-                    }
-                }
-
-                UsageEvents.Event.MOVE_TO_BACKGROUND,
-                UsageEvents.Event.ACTIVITY_PAUSED -> {
-
-                    if (isForeground) {
-
-                        val sessionEnd =
-                            event.timeStamp
-
-                        val start =
-                            max(sessionStart, dayStart)
-
-                        val end =
-                            min(sessionEnd, now)
-
-                        if (end > start) {
-                            total += end - start
-                        }
-
-                        isForeground = false
-                        sessionStart = 0L
-                    }
-                }
-            }
+        val calendar = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
+        val dayStart = calendar.timeInMillis
+        if (now <= dayStart) return 0L
 
-        // Include the currently open session up to "now".
-        if (isForeground && sessionStart > 0L) {
-
-            val start =
-                max(sessionStart, dayStart)
-
-            if (now > start) {
-                total += now - start
-            }
-        }
-
-        return max(0L, total)
+        return AppSenseUsageCalculator.getIntervals(
+            context = this,
+            packageName = packageName,
+            dayStart = dayStart,
+            dayEnd = now
+        ).sumOf { it.endTime - it.startTime }
     }
 
     private fun formatDuration(
