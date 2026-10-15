@@ -4,7 +4,7 @@
     <selectionStates>
       <SelectionState runConfigName="AppSense">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2026-10-01T18:57:55.434302800Z">
+        <DropdownSelection timestamp="2026-10-15T09:35:03.615028200Z">
           <Target type="DEFAULT_BOOT">
             <handle>
               <DeviceId pluginId="Wireless" identifier="serviceName=adb-cf2616e-3F8pcB" />

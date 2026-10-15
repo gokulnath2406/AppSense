@@ -14,6 +14,8 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -58,7 +60,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
@@ -99,19 +100,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Android 13+: allow the foreground-service notification to be shown.
-        if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(
-                android.Manifest.permission.POST_NOTIFICATIONS
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(
-                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
-                1002
-            )
-        }
 
         // Keep Android Status Bar visible and make its
         // time / network / battery icons clearly visible.
@@ -156,15 +144,6 @@ private fun hasOverlayPermission(
 ): Boolean {
 
     return Settings.canDrawOverlays(context)
-}
-
-private fun hasNotificationAccess(
-    context: Context
-): Boolean {
-
-    return NotificationManagerCompat
-        .getEnabledListenerPackages(context)
-        .contains(context.packageName)
 }
 
 /* =========================================================
@@ -991,13 +970,26 @@ fun AppSenseApp() {
         )
     }
 
-    var notificationAccessGranted by remember {
+    // Android 13+ notification permission is optional for setup.
+    // Ask only when the user taps the explained onboarding card.
+    var notificationPermissionGranted by remember {
         mutableStateOf(
-            hasNotificationAccess(context)
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         )
     }
 
-    var showNameDialog by remember {
+    val notificationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            notificationPermissionGranted = granted
+        }
+
+    var showNameDialog by rememberSaveable {
         mutableStateOf(false)
     }
 
@@ -1023,18 +1015,14 @@ fun AppSenseApp() {
         mutableStateOf(false)
     }
 
-    // Persist across configuration changes (for example, phone rotation).
-    // This prevents the splash flow and service-start flow from running again.
     var splashHandled by rememberSaveable {
         mutableStateOf(false)
     }
 
-    // Keep the current navigation screen across rotation.
     var currentScreen by rememberSaveable {
         mutableStateOf("dashboard")
     }
 
-    // Keep the selected app detail target across rotation.
     var detailPackage by rememberSaveable {
         mutableStateOf<String?>(null)
     }
@@ -1064,10 +1052,13 @@ fun AppSenseApp() {
                             context
                         )
 
-                    notificationAccessGranted =
-                        hasNotificationAccess(
-                            context
-                        )
+                    notificationPermissionGranted =
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                                ContextCompat.checkSelfPermission(
+                                    context,
+                                    android.Manifest.permission.POST_NOTIFICATIONS
+                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
                 }
             }
 
@@ -1098,14 +1089,12 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted,
-        notificationAccessGranted
+        overlayPermissionGranted
     ) {
 
         if (
             permissionGranted &&
             overlayPermissionGranted &&
-            notificationAccessGranted &&
             !splashHandled
         ) {
 
@@ -1132,23 +1121,14 @@ fun AppSenseApp() {
 
             showSplash = false
 
-            val savedName =
-                context
-                    .getSharedPreferences(
-                        "appsense_preferences",
-                        Context.MODE_PRIVATE
-                    )
-                    .getString(
-                        "user_name",
-                        null
-                    )
+        }
+    }
 
-            if (
-                savedName.isNullOrBlank()
-            ) {
-
-                showNameDialog = true
-            }
+    // Keep first-time name onboarding independent from the splash delay.
+    // If rotation cancels the splash coroutine, this effect can still show the dialog.
+    LaunchedEffect(splashHandled, showSplash, userName) {
+        if (splashHandled && !showSplash && userName.isBlank()) {
+            showNameDialog = true
         }
     }
 
@@ -1158,14 +1138,12 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted,
-        notificationAccessGranted
+        overlayPermissionGranted
     ) {
 
         if (
             permissionGranted &&
             overlayPermissionGranted &&
-            notificationAccessGranted &&
             installedAppsCache == null
         ) {
 
@@ -1182,14 +1160,23 @@ fun AppSenseApp() {
 
     if (
         !permissionGranted ||
-        !overlayPermissionGranted ||
-        !notificationAccessGranted
+        !overlayPermissionGranted
     ) {
 
         PermissionSetupScreen(
             usageAccessGranted = permissionGranted,
             overlayAccessGranted = overlayPermissionGranted,
-            notificationAccessGranted = notificationAccessGranted,
+            notificationPermissionGranted = notificationPermissionGranted,
+
+            onRequestNotificationPermission = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    notificationPermissionLauncher.launch(
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    )
+                } else {
+                    notificationPermissionGranted = true
+                }
+            },
 
             onGrantUsageAccess = {
                 context.startActivity(
@@ -1213,14 +1200,6 @@ fun AppSenseApp() {
 
                 context.startActivity(
                     intent
-                )
-            },
-
-            onGrantNotificationAccess = {
-                context.startActivity(
-                    Intent(
-                        Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS
-                    )
                 )
             }
         )
@@ -1792,16 +1771,15 @@ private fun AppSenseSplashScreen() {
 fun PermissionSetupScreen(
     usageAccessGranted: Boolean,
     overlayAccessGranted: Boolean,
-    notificationAccessGranted: Boolean,
+    notificationPermissionGranted: Boolean,
+    onRequestNotificationPermission: () -> Unit,
     onGrantUsageAccess: () -> Unit,
-    onGrantOverlayAccess: () -> Unit,
-    onGrantNotificationAccess: () -> Unit
+    onGrantOverlayAccess: () -> Unit
 ) {
 
     val allGranted =
         usageAccessGranted &&
-                overlayAccessGranted &&
-                notificationAccessGranted
+                overlayAccessGranted
 
     Column(
         modifier = Modifier
@@ -1854,11 +1832,11 @@ fun PermissionSetupScreen(
         )
 
         PermissionCard(
-            title = "Notification Access",
-            description = "Allow AppSense to access notifications for future awareness and goal features.",
-            granted = notificationAccessGranted,
-            buttonText = "Allow Notification Access",
-            onClick = onGrantNotificationAccess
+            title = "Foreground notification (optional)",
+            description = "Android uses this notification to show that AppSense monitoring is running. You can continue without it, but Android may limit notification visibility.",
+            granted = notificationPermissionGranted,
+            buttonText = if (notificationPermissionGranted) "Notification allowed" else "Allow notification",
+            onClick = onRequestNotificationPermission
         )
 
         Spacer(
@@ -1874,7 +1852,7 @@ fun PermissionSetupScreen(
             }
         ) {
             Text(
-                if (allGranted) "Continue" else "Complete all accesses"
+                if (allGranted) "Continue" else "Complete required setup"
             )
         }
     }
@@ -3298,41 +3276,15 @@ fun DailyDetail(
             )
             .padding(24.dp)
     ) {
-        val isToday = run {
-            val today = Calendar.getInstance()
-            today.get(Calendar.YEAR) == date.get(Calendar.YEAR) &&
-                    today.get(Calendar.DAY_OF_YEAR) == date.get(Calendar.DAY_OF_YEAR)
-        }
-
-        val dateLabel = SimpleDateFormat(
-            "d MMM yyyy",
-            Locale.getDefault()
-        ).format(date.time)
-
-        val usageTitle =
-            if (isToday) {
-                "Today's usage"
-            } else {
-                "Usage on $dateLabel"
-            }
-
-        val displayAppName =
-            try {
-                val info = context.packageManager.getApplicationInfo(packageName, 0)
-                context.packageManager.getApplicationLabel(info).toString()
-            } catch (_: Exception) {
-                packageName
-            }
-
         Text(
-            text = usageTitle,
+            text = "Today's usage",
             style = MaterialTheme.typography.titleMedium
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "Total time spent in $displayAppName",
+            text = "Total time spent in $packageName",
             style = MaterialTheme.typography.bodySmall
         )
 

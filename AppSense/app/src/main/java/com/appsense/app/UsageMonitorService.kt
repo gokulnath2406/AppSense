@@ -54,6 +54,7 @@ class UsageMonitorService : Service() {
 
     private var lastForegroundPackage: String? = null
 
+    @Volatile
     private var isExpanded = false
     private var outsideTouchView: View? = null
 
@@ -915,89 +916,64 @@ class UsageMonitorService : Service() {
         elapsed: Long,
         todayTotal: Long
     ) {
+        val view = overlayView ?: return
 
-        val view =
-            overlayView ?: return
-
-        val timer =
-            view.getChildAt(1)
-                    as? TextView
-
-        val emoji =
-            view.getChildAt(0)
-                    as? TextView
-
-        val timerText =
-            formatDuration(elapsed)
+        val timerText = formatDuration(elapsed)
 
         val timerColor =
             when {
-                todayTotal < YELLOW_AFTER_MS ->
-                    Color.WHITE
-
-                todayTotal < RED_AFTER_MS ->
-                    Color.YELLOW
-
-                else ->
-                    Color.RED
+                todayTotal < YELLOW_AFTER_MS -> Color.WHITE
+                todayTotal < RED_AFTER_MS -> Color.YELLOW
+                else -> Color.RED
             }
 
         val emojiText =
             when {
-                todayTotal < YELLOW_AFTER_MS ->
-                    "🙂"
-
-                todayTotal < RED_AFTER_MS ->
-                    "😐"
-
-                else ->
-                    "😞"
+                todayTotal < YELLOW_AFTER_MS -> "🙂"
+                todayTotal < RED_AFTER_MS -> "😐"
+                else -> "😞"
             }
 
+        // Resolve children only on the UI thread. Expansion/collapse
+        // can replace the children between monitoring-thread polls.
         view.post {
+            if (overlayView !== view) {
+                return@post
+            }
 
             if (isExpanded) {
+                val emojiView =
+                    expandedEmojiView
+                        ?: (view.getChildAt(0) as? TextView)
 
                 val todayView =
-                    view.getChildAt(1)
-                            as? TextView
+                    expandedTodayView
+                        ?: (view.getChildAt(1) as? TextView)
 
                 val currentView =
-                    view.getChildAt(2)
-                            as? TextView
+                    expandedCurrentView
+                        ?: (view.getChildAt(2) as? TextView)
 
-                emoji?.text =
-                    emojiText
-
+                emojiView?.text = emojiText
                 todayView?.text =
                     "Today: ${formatDuration(todayTotal)}"
+                currentView?.text = "Current: $timerText"
 
-                currentView?.text =
-                    "Current: $timerText"
-
-                todayView?.setTextColor(
-                    timerColor
-                )
-
-                currentView?.setTextColor(
-                    timerColor
-                )
-
+                todayView?.setTextColor(timerColor)
+                currentView?.setTextColor(timerColor)
             } else {
+                val emojiView =
+                    view.getChildAt(0) as? TextView
 
-                timer?.text =
-                    timerText
+                val timerView =
+                    view.getChildAt(1) as? TextView
 
-                timer?.setTextColor(
-                    timerColor
-                )
-
-                emoji?.text =
-                    emojiText
+                timerView?.text = timerText
+                timerView?.setTextColor(timerColor)
+                emojiView?.text = emojiText
             }
 
-            view.visibility =
-                View.VISIBLE
+            view.visibility = View.VISIBLE
         }
     }
 
