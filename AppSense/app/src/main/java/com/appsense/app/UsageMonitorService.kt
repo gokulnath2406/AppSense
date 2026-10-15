@@ -20,6 +20,9 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Button
+import android.os.Handler
+import android.os.Looper
 import android.content.pm.ServiceInfo
 import java.util.Calendar
 import kotlin.math.max
@@ -40,6 +43,8 @@ class UsageMonitorService : Service() {
 
         private const val YELLOW_AFTER_MS = 30L * 60L * 1000L
         private const val RED_AFTER_MS = 60L * 60L * 1000L
+        private const val FIRST_REMINDER_MS = 15L * 60L * 1000L
+        private const val REPEAT_REMINDER_MS = 10L * 60L * 1000L
     }
 
     private var monitoringThread: Thread? = null
@@ -70,6 +75,20 @@ class UsageMonitorService : Service() {
     @Volatile
     private var isExpanded = false
     private var outsideTouchView: View? = null
+
+    // Intervention reminders are based on the current continuous tracked-app session.
+    // The first prompt appears at 15 minutes; later prompts are spaced 10 minutes apart.
+    private var nextReminderElapsedMs = FIRST_REMINDER_MS
+    private var activeReminderType: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var breathingRunnable: Runnable? = null
+    private var breathingStep = 0
+    private var gameCells = MutableList(9) { "" }
+    private var gameFinished = false
+    private var featurePanel: LinearLayout? = null
+    private var featureStatusView: TextView? = null
+    private var featureActionButton: Button? = null
+    private var gameButtons: MutableList<Button> = mutableListOf()
 
     // Cached expanded-view children.
     // They are created once and reused to avoid rebuilding the UI
@@ -205,6 +224,9 @@ class UsageMonitorService : Service() {
             if (currentPackage != foregroundPackage) {
                 currentPackage = foregroundPackage
                 sessionStartTime = System.currentTimeMillis()
+                nextReminderElapsedMs = FIRST_REMINDER_MS
+                activeReminderType = null
+                cancelBreathingExercise()
             }
 
             val now =
@@ -225,6 +247,27 @@ class UsageMonitorService : Service() {
                 elapsed,
                 todayTotal
             )
+
+            if (elapsed >= nextReminderElapsedMs) {
+                // Advance before posting to the UI thread so polling cannot queue duplicates.
+                // Do not replace an intervention the user is currently using; the next
+                // reminder remains scheduled 10 minutes later.
+                nextReminderElapsedMs = elapsed + REPEAT_REMINDER_MS
+                if (activeReminderType == null) {
+                    val reminderType = if (kotlin.random.Random.nextBoolean()) "breathing" else "game"
+                    overlayView?.post {
+                        if (
+                            currentPackage == foregroundPackage &&
+                            activeReminderType == null &&
+                            Settings.canDrawOverlays(this)
+                        ) {
+                            activeReminderType = reminderType
+                            if (!isExpanded) expandFloatingTimer()
+                            renderReminderPanel()
+                        }
+                    }
+                }
+            }
 
         } else {
 
@@ -635,7 +678,7 @@ class UsageMonitorService : Service() {
         val expandedHeight =
             max(
                 oldHeight * 2,
-                (96 * density).toInt()
+                (110 * density).toInt()
             )
 
         // The expanded card uses three compact rows:
@@ -769,6 +812,170 @@ class UsageMonitorService : Service() {
         }
 
         createOutsideTouchLayer()
+        if (activeReminderType != null) renderReminderPanel()
+    }
+
+    private fun renderReminderPanel() {
+        val view = overlayView ?: return
+        val params = overlayParams ?: return
+        val type = activeReminderType ?: return
+        if (!isExpanded) return
+
+        // Rebuild only the optional intervention area; the timer and usage rows stay intact.
+        while (view.childCount > 3) view.removeViewAt(3)
+        featurePanel = null
+        featureStatusView = null
+        featureActionButton = null
+        gameButtons.clear()
+
+        val density = resources.displayMetrics.density
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding((4 * density).toInt(), (3 * density).toInt(), (4 * density).toInt(), (3 * density).toInt())
+        }
+        val status = TextView(this).apply {
+            text = if (type == "breathing") "15 minutes here. Take a 10-second reset." else "15 minutes here. Take a quick play break."
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            maxLines = 3
+        }
+        val action = Button(this).apply {
+            text = when (type) {
+                "breathing" -> "Start breathing"
+                else -> if (gameCells.any { it.isNotEmpty() }) "Restart Tic-Tac-Toe" else "Play Tic-Tac-Toe"
+            }
+            textSize = 11f
+            isAllCaps = false
+            setOnClickListener {
+                if (type == "breathing") startBreathingExercise() else startTicTacToe()
+            }
+        }
+        panel.addView(status, LinearLayout.LayoutParams(-1, (42 * density).toInt()))
+        panel.addView(action, LinearLayout.LayoutParams(-1, (42 * density).toInt()))
+        view.addView(panel, LinearLayout.LayoutParams(-1, -2))
+        featurePanel = panel
+        featureStatusView = status
+        featureActionButton = action
+
+        // The intervention card grows only while a prompt/game is active.
+        params.width = (280 * density).toInt()
+        params.height = if (type == "game" && gameCells.any { it.isNotEmpty() }) (340 * density).toInt() else (220 * density).toInt()
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        params.x = params.x.coerceIn(0, max(0, screenWidth - params.width))
+        params.y = params.y.coerceIn(0, max(0, screenHeight - params.height))
+        try { windowManager.updateViewLayout(view, params) } catch (_: Exception) { }
+
+        if (type == "game" && gameCells.any { it.isNotEmpty() }) renderGameBoard()
+    }
+
+    private fun startBreathingExercise() {
+        cancelBreathingExercise()
+        breathingStep = 0
+        featureActionButton?.text = "Breathing…"
+        runBreathingStep()
+    }
+
+    private fun runBreathingStep() {
+        val status = featureStatusView ?: return
+        val messages = listOf("Breathe in slowly…", "Breathe out slowly…")
+        if (breathingStep >= 2) {
+            status.text = "Reset complete. Ready to continue?"
+            featureActionButton?.text = "Done"
+            featureActionButton?.setOnClickListener {
+                activeReminderType = null
+                collapseFloatingTimer()
+            }
+            return
+        }
+        status.text = messages[breathingStep]
+        breathingStep++
+        val runnable = Runnable { runBreathingStep() }
+        breathingRunnable = runnable
+        mainHandler.postDelayed(runnable, 5_000L)
+    }
+
+    private fun cancelBreathingExercise() {
+        breathingRunnable?.let { mainHandler.removeCallbacks(it) }
+        breathingRunnable = null
+    }
+
+    private fun startTicTacToe() {
+        gameCells = MutableList(9) { "" }
+        gameFinished = false
+        featureStatusView?.text = "Your turn — tap a square (X)."
+        featureActionButton?.text = "Restart Tic-Tac-Toe"
+        featureActionButton?.setOnClickListener { startTicTacToe() }
+        renderGameBoard()
+    }
+
+    private fun renderGameBoard() {
+        val panel = featurePanel ?: return
+        val density = resources.displayMetrics.density
+        // Remove any previous board rows while retaining status and action controls.
+        while (panel.childCount > 2) panel.removeViewAt(2)
+        gameButtons.clear()
+        repeat(3) { rowIndex ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            repeat(3) { colIndex ->
+                val index = rowIndex * 3 + colIndex
+                val cell = Button(this).apply {
+                    text = gameCells[index].ifEmpty { "·" }
+                    textSize = 16f
+                    isAllCaps = false
+                    setPadding(0, 0, 0, 0)
+                    setOnClickListener {
+                        if (gameFinished || gameCells[index].isNotEmpty()) return@setOnClickListener
+                        gameCells[index] = "X"
+                        if (hasWinner("X")) {
+                            gameFinished = true
+                            featureStatusView?.text = "You win! Nice break."
+                        } else if (gameCells.none { it.isEmpty() }) {
+                            gameFinished = true
+                            featureStatusView?.text = "It's a draw. Take a breath."
+                        } else {
+                            val available = gameCells.indices.filter { gameCells[it].isEmpty() }
+                            gameCells[available.random()] = "O"
+                            if (hasWinner("O")) {
+                                gameFinished = true
+                                featureStatusView?.text = "AppSense wins this round. Try again?"
+                            } else if (gameCells.none { it.isEmpty() }) {
+                                gameFinished = true
+                                featureStatusView?.text = "It's a draw. Try again?"
+                            } else {
+                                featureStatusView?.text = "Your turn — tap a square (X)."
+                            }
+                        }
+                        renderGameBoard()
+                    }
+                }
+                row.addView(cell, LinearLayout.LayoutParams(0, (42 * density).toInt(), 1f).apply {
+                    setMargins((2 * density).toInt(), (1 * density).toInt(), (2 * density).toInt(), (1 * density).toInt())
+                })
+                gameButtons.add(cell)
+            }
+            panel.addView(row, LinearLayout.LayoutParams(-1, (44 * density).toInt()))
+        }
+        val params = overlayParams
+        val view = overlayView
+        if (params != null && view != null) {
+            params.height = (340 * density).toInt()
+            try { windowManager.updateViewLayout(view, params) } catch (_: Exception) { }
+        }
+    }
+
+    private fun hasWinner(mark: String): Boolean {
+        val lines = arrayOf(
+            intArrayOf(0,1,2), intArrayOf(3,4,5), intArrayOf(6,7,8),
+            intArrayOf(0,3,6), intArrayOf(1,4,7), intArrayOf(2,5,8),
+            intArrayOf(0,4,8), intArrayOf(2,4,6)
+        )
+        return lines.any { line -> line.all { gameCells[it] == mark } }
     }
 
     private fun collapseFloatingTimer() {
@@ -782,6 +989,12 @@ class UsageMonitorService : Service() {
         if (!isExpanded) return
 
         isExpanded = false
+        cancelBreathingExercise()
+        activeReminderType = null
+        featurePanel = null
+        featureStatusView = null
+        featureActionButton = null
+        gameButtons.clear()
 
         val density =
             resources.displayMetrics.density
@@ -1094,6 +1307,7 @@ class UsageMonitorService : Service() {
     override fun onDestroy() {
 
         isMonitoring = false
+        cancelBreathingExercise()
 
         monitoringThread?.interrupt()
         monitoringThread = null
