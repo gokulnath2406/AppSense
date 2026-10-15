@@ -1,4 +1,3 @@
-
 package com.appsense.app
 
 import android.app.AppOpsManager
@@ -53,7 +52,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -615,8 +613,13 @@ fun AppSenseApp() {
         )
     }
 
-    // Android 13+ notification permission is optional for setup.
-    // Ask only when the user taps the explained onboarding card.
+    // Android 13+ notification permission is optional for core tracking,
+    // but request it once before the splash so users are not dependent on
+    // the setup card remaining visible. Denial never blocks AppSense.
+    val notificationPrefs = remember {
+        context.getSharedPreferences("appsense_preferences", Context.MODE_PRIVATE)
+    }
+
     var notificationPermissionGranted by remember {
         mutableStateOf(
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -627,11 +630,25 @@ fun AppSenseApp() {
         )
     }
 
+    var notificationPromptCompleted by rememberSaveable {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    notificationPermissionGranted ||
+                    notificationPrefs.getBoolean("notification_permission_prompted", false)
+        )
+    }
+
+    var notificationPromptInFlight by rememberSaveable {
+        mutableStateOf(false)
+    }
+
     val notificationPermissionLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission()
         ) { granted ->
             notificationPermissionGranted = granted
+            notificationPromptInFlight = false
+            notificationPromptCompleted = true
         }
 
     var showNameDialog by rememberSaveable {
@@ -724,6 +741,8 @@ fun AppSenseApp() {
      *      ↓
      * Display over other apps
      *      ↓
+     * Optional notification permission (Android 13+, once)
+     *      ↓
      * AppSense splash
      *      ↓
      * Name dialog (first setup only)
@@ -734,7 +753,10 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted
+        overlayPermissionGranted,
+        notificationPermissionGranted,
+        notificationPromptCompleted,
+        notificationPromptInFlight
     ) {
 
         if (
@@ -742,6 +764,25 @@ fun AppSenseApp() {
             overlayPermissionGranted &&
             !splashHandled
         ) {
+
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !notificationPermissionGranted &&
+                !notificationPromptCompleted &&
+                !notificationPromptInFlight
+            ) {
+                // Persist before launching so denial does not cause a prompt loop.
+                notificationPrefs.edit()
+                    .putBoolean("notification_permission_prompted", true)
+                    .apply()
+                notificationPromptInFlight = true
+                notificationPermissionLauncher.launch(
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                )
+                return@LaunchedEffect
+            }
+
+            if (notificationPromptInFlight) return@LaunchedEffect
 
             splashHandled = true
             showSplash = true
@@ -755,11 +796,8 @@ fun AppSenseApp() {
                     UsageMonitorService::class.java
                 )
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
+            // minSdk is 26 (Android 8.0), so foreground-service API is available.
+            context.startForegroundService(serviceIntent)
 
             // Keep the splash short and smooth.
             delay(1800L)
@@ -815,11 +853,16 @@ fun AppSenseApp() {
 
             onRequestNotificationPermission = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    notificationPrefs.edit()
+                        .putBoolean("notification_permission_prompted", true)
+                        .apply()
+                    notificationPromptCompleted = true
                     notificationPermissionLauncher.launch(
                         android.Manifest.permission.POST_NOTIFICATIONS
                     )
                 } else {
                     notificationPermissionGranted = true
+                    notificationPromptCompleted = true
                 }
             },
 

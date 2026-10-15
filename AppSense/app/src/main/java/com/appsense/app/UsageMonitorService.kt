@@ -7,7 +7,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
-import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -33,6 +32,8 @@ class UsageMonitorService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         private const val POLL_INTERVAL = 1000L
+        // Rebuild today's event history less often than the UI timer refreshes.
+        private const val USAGE_TOTAL_REFRESH_INTERVAL = 30_000L
 
         private const val BOX_HEIGHT_DP = 36
         private const val EDGE_MARGIN_DP = 6
@@ -53,6 +54,14 @@ class UsageMonitorService : Service() {
     private var sessionStartTime = 0L
 
     private var lastForegroundPackage: String? = null
+
+    // Cache today's full event-history calculation. The visible session timer still
+    // refreshes every second; only the more expensive daily total is refreshed every 30s.
+    @Volatile private var cachedUsagePackage: String? = null
+    @Volatile private var cachedUsageDayStart: Long = 0L
+    @Volatile private var cachedUsageAt: Long = 0L
+    @Volatile private var cachedTodayUsage: Long = 0L
+
     // On service startup, reconstruct foreground state from a wider event window.
     // Subsequent polling uses the short window to avoid repeatedly scanning history.
     @Volatile
@@ -160,6 +169,7 @@ class UsageMonitorService : Service() {
             isForegroundStateInitialized = false
             currentPackage = null
             sessionStartTime = 0L
+            cachedUsageAt = 0L // Do not count screen-off time as app usage.
             hideFloatingTimer()
             return
         }
@@ -179,6 +189,7 @@ class UsageMonitorService : Service() {
         if (selectedApps.isEmpty()) {
             currentPackage = null
             sessionStartTime = 0L
+            cachedUsageAt = 0L
             hideFloatingTimer()
             return
         }
@@ -219,6 +230,9 @@ class UsageMonitorService : Service() {
 
             currentPackage = null
             sessionStartTime = 0L
+            // Invalidate the extrapolation anchor so time spent in other apps
+            // or on the launcher is never added to this package's cached usage.
+            cachedUsageAt = 0L
 
             if (isExpanded) {
                 // Window/View operations must run on the main thread.
@@ -401,17 +415,7 @@ class UsageMonitorService : Service() {
             WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 height,
-                if (
-                    Build.VERSION.SDK_INT >=
-                    Build.VERSION_CODES.O
-                ) {
-                    WindowManager.LayoutParams
-                        .TYPE_APPLICATION_OVERLAY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams
-                        .TYPE_PHONE
-                },
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             ).apply {
@@ -869,16 +873,7 @@ class UsageMonitorService : Service() {
                 }
             }
 
-        val type =
-            if (
-                Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.O
-            ) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            }
+        val type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
         val layerParams =
             WindowManager.LayoutParams(
@@ -1019,12 +1014,30 @@ class UsageMonitorService : Service() {
         val dayStart = calendar.timeInMillis
         if (now <= dayStart) return 0L
 
-        return AppSenseUsageCalculator.getIntervals(
+        val cacheIsValid =
+            cachedUsagePackage == packageName &&
+                    cachedUsageDayStart == dayStart &&
+                    cachedUsageAt > 0L &&
+                    now - cachedUsageAt < USAGE_TOTAL_REFRESH_INTERVAL
+
+        if (cacheIsValid) {
+            // Keep the total moving while the same tracked app remains open,
+            // without replaying its full event history on every 1-second UI tick.
+            return cachedTodayUsage + (now - cachedUsageAt)
+        }
+
+        val calculatedUsage = AppSenseUsageCalculator.getIntervals(
             context = this,
             packageName = packageName,
             dayStart = dayStart,
             dayEnd = now
         ).sumOf { it.endTime - it.startTime }
+
+        cachedUsagePackage = packageName
+        cachedUsageDayStart = dayStart
+        cachedUsageAt = now
+        cachedTodayUsage = calculatedUsage
+        return calculatedUsage
     }
 
     private fun formatDuration(
@@ -1057,74 +1070,25 @@ class UsageMonitorService : Service() {
     }
 
     private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "AppSense Monitoring",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        channel.description =
+            "Shows that AppSense is monitoring application usage."
 
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
-
-            val channel =
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "AppSense Monitoring",
-                    NotificationManager
-                        .IMPORTANCE_LOW
-                )
-
-            channel.description =
-                "Shows that AppSense is monitoring application usage."
-
-            val manager =
-                getSystemService(
-                    NotificationManager::class.java
-                )
-
-            manager.createNotificationChannel(
-                channel
-            )
-        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
     }
 
     private fun createNotification(): Notification {
-
-        return if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.O
-        ) {
-
-            Notification.Builder(
-                this,
-                CHANNEL_ID
-            )
-                .setContentTitle(
-                    "AppSense"
-                )
-                .setContentText(
-                    "Floating usage timer is active"
-                )
-                .setSmallIcon(
-                    android.R.drawable
-                        .ic_menu_recent_history
-                )
-                .setOngoing(true)
-                .build()
-
-        } else {
-
-            Notification.Builder(this)
-                .setContentTitle(
-                    "AppSense"
-                )
-                .setContentText(
-                    "Floating usage timer is active"
-                )
-                .setSmallIcon(
-                    android.R.drawable
-                        .ic_menu_recent_history
-                )
-                .setOngoing(true)
-                .build()
-        }
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("AppSense")
+            .setContentText("Floating usage timer is active")
+            .setSmallIcon(android.R.drawable.ic_menu_recent_history)
+            .setOngoing(true)
+            .build()
     }
 
     override fun onDestroy() {
