@@ -13,8 +13,6 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -49,9 +47,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -109,12 +107,7 @@ class MainActivity : ComponentActivity() {
         ).isAppearanceLightStatusBars = true
 
         setContent {
-            // Keep AppSense on a light Material theme so hardcoded light UI
-            // colors and Material components remain readable in device dark mode.
-            AppSenseTheme(
-                darkTheme = false,
-                dynamicColor = false
-            ) {
+            AppSenseTheme {
                 AppSenseApp()
             }
         }
@@ -350,21 +343,161 @@ private fun getUsageSessions(
     packageName: String,
     date: Calendar
 ): List<UsageSession> {
-    val dayStart = getDayStart(date)
-    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
-    if (dayEnd <= dayStart) return emptyList()
 
-    return AppSenseUsageCalculator.getIntervals(
-        context = context,
-        packageName = packageName,
-        dayStart = dayStart,
-        dayEnd = dayEnd
-    ).map { interval ->
-        UsageSession(
-            startTime = interval.startTime,
-            endTime = interval.endTime,
-            durationMillis = interval.endTime - interval.startTime
+    val dayStart =
+        getDayStart(date)
+
+    val dayEnd =
+        getDayEnd(date)
+
+    val now =
+        System.currentTimeMillis()
+
+    val queryEnd =
+        minOf(
+            dayEnd,
+            now
         )
+
+    if (
+        queryEnd <= dayStart
+    ) {
+        return emptyList()
+    }
+
+    val usageManager =
+        context.getSystemService(
+            Context.USAGE_STATS_SERVICE
+        ) as UsageStatsManager
+
+    val events =
+        usageManager.queryEvents(
+            dayStart,
+            queryEnd
+        )
+
+    val event =
+        UsageEvents.Event()
+
+    val sessions =
+        mutableListOf<UsageSession>()
+
+    var openTime:
+            Long? = null
+
+    while (
+        events.hasNextEvent()
+    ) {
+
+        events.getNextEvent(event)
+
+        if (
+            event.packageName !=
+            packageName
+        ) {
+            continue
+        }
+
+        when (
+            event.eventType
+        ) {
+
+            foregroundEvent() -> {
+
+                if (
+                    openTime == null
+                ) {
+
+                    openTime =
+                        event.timeStamp
+                }
+            }
+
+            backgroundEvent() -> {
+
+                val start =
+                    openTime
+
+                if (
+                    start != null &&
+                    event.timeStamp > start
+                ) {
+
+                    val actualStart =
+                        maxOf(
+                            start,
+                            dayStart
+                        )
+
+                    val actualEnd =
+                        minOf(
+                            event.timeStamp,
+                            dayEnd
+                        )
+
+                    if (
+                        actualEnd >
+                        actualStart
+                    ) {
+
+                        sessions.add(
+                            UsageSession(
+                                startTime =
+                                    actualStart,
+
+                                endTime =
+                                    actualEnd,
+
+                                durationMillis =
+                                    actualEnd -
+                                            actualStart
+                            )
+                        )
+                    }
+
+                    openTime =
+                        null
+                }
+            }
+        }
+    }
+
+    if (
+        openTime != null
+    ) {
+
+        val actualStart =
+            maxOf(
+                openTime!!,
+                dayStart
+            )
+
+        val actualEnd =
+            queryEnd
+
+        if (
+            actualEnd >
+            actualStart
+        ) {
+
+            sessions.add(
+                UsageSession(
+                    startTime =
+                        actualStart,
+
+                    endTime =
+                        actualEnd,
+
+                    durationMillis =
+                        actualEnd -
+                                actualStart
+                )
+            )
+        }
+    }
+
+    return sessions.sortedBy {
+        it.startTime
     }
 }
 
@@ -377,21 +510,172 @@ private fun getAppUsageForDate(
     packageName: String,
     date: Calendar
 ): Long {
-    val dayStart = getDayStart(date)
-    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
-    if (dayEnd <= dayStart) return 0L
 
-    return AppSenseUsageCalculator.getIntervals(
-        context = context,
-        packageName = packageName,
-        dayStart = dayStart,
-        dayEnd = dayEnd
-    ).sumOf { it.endTime - it.startTime }
+    val dayStart =
+        getDayStart(date)
+
+    val dayEnd =
+        minOf(
+            getDayEnd(date),
+            System.currentTimeMillis()
+        )
+
+    if (
+        dayEnd <= dayStart
+    ) {
+        return 0L
+    }
+
+    val usageManager =
+        context.getSystemService(
+            Context.USAGE_STATS_SERVICE
+        ) as UsageStatsManager
+
+    val queryStart =
+        dayStart -
+                (
+                        24L *
+                                60L *
+                                60L *
+                                1000L
+                        )
+
+    val events =
+        usageManager.queryEvents(
+            queryStart,
+            dayEnd
+        )
+
+    val event =
+        UsageEvents.Event()
+
+    val activeActivities =
+        mutableSetOf<String>()
+
+    var sessionStart:
+            Long? = null
+
+    var totalUsage =
+        0L
+
+    while (
+        events.hasNextEvent()
+    ) {
+
+        events.getNextEvent(event)
+
+        if (
+            event.packageName !=
+            packageName
+        ) {
+            continue
+        }
+
+        val activityName =
+            event.className ?: ""
+
+        when (
+            event.eventType
+        ) {
+
+            foregroundEvent() -> {
+
+                val wasEmpty =
+                    activeActivities.isEmpty()
+
+                activeActivities.add(
+                    activityName
+                )
+
+                if (
+                    wasEmpty &&
+                    event.timeStamp >=
+                    dayStart
+                ) {
+
+                    sessionStart =
+                        event.timeStamp
+                }
+            }
+
+            backgroundEvent() -> {
+
+                activeActivities.remove(
+                    activityName
+                )
+
+                if (
+                    activeActivities.isEmpty() &&
+                    sessionStart != null
+                ) {
+
+                    val start =
+                        maxOf(
+                            sessionStart!!,
+                            dayStart
+                        )
+
+                    val end =
+                        minOf(
+                            event.timeStamp,
+                            dayEnd
+                        )
+
+                    if (
+                        end > start
+                    ) {
+
+                        totalUsage +=
+                            end - start
+                    }
+
+                    sessionStart =
+                        null
+                }
+            }
+        }
+
+        if (
+            event.timeStamp <
+            dayStart &&
+            activeActivities.isNotEmpty()
+        ) {
+
+            sessionStart =
+                dayStart
+        }
+    }
+
+    if (
+        activeActivities.isNotEmpty() &&
+        sessionStart != null
+    ) {
+
+        val start =
+            maxOf(
+                sessionStart!!,
+                dayStart
+            )
+
+        val end =
+            dayEnd
+
+        if (
+            end > start
+        ) {
+
+            totalUsage +=
+                end - start
+        }
+    }
+
+    return totalUsage
 }
 
 /* =========================================================
    DASHBOARD CHART DATA
-   Hourly buckets are derived from the shared usage intervals.
+   Read-only dashboard aggregation. Existing usage/session
+   functions are intentionally left unchanged.
    ========================================================= */
 
 private fun addDashboardIntervalToHours(
@@ -461,31 +745,100 @@ private fun getDashboardHourlyUsage(
     packageNames: Set<String>,
     date: Calendar
 ): List<DashboardHourlyAppUsage> {
+
     if (packageNames.isEmpty()) return emptyList()
 
     val dayStart = getDayStart(date)
-    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
+    val dayEnd = minOf(
+        getDayEnd(date),
+        System.currentTimeMillis()
+    )
+
     if (dayEnd <= dayStart) return emptyList()
 
-    val labelsByPackage = getInstalledApps(context).associateBy { it.packageName }
+    val usageManager =
+        context.getSystemService(
+            Context.USAGE_STATS_SERVICE
+        ) as UsageStatsManager
+
+    val labelsByPackage =
+        getInstalledApps(context).associateBy { it.packageName }
 
     return packageNames.map { packageName ->
         val buckets = LongArray(24)
-        val intervals = AppSenseUsageCalculator.getIntervals(
-            context = context,
-            packageName = packageName,
-            dayStart = dayStart,
-            dayEnd = dayEnd
-        )
 
-        intervals.forEach { interval ->
-            addDashboardIntervalToHours(
-                buckets = buckets,
-                dayStart = dayStart,
-                dayEnd = dayEnd,
-                startTime = interval.startTime,
-                endTime = interval.endTime
-            )
+        // Query before midnight so an app already in the foreground
+        // at 00:00 is counted from the start of this day.
+        val queryStart = dayStart - 24L * 60L * 60L * 1000L
+        val events = usageManager.queryEvents(queryStart, dayEnd)
+        val event = UsageEvents.Event()
+
+        // Track each Activity independently. Android UsageEvents are
+        // Activity-level events, so one Boolean/openTime is not enough.
+        val activeActivities = mutableMapOf<String, Long>()
+        var packageSessionStart: Long? = null
+
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+
+            if (event.packageName != packageName) continue
+
+            val activityName = event.className ?: ""
+            val timestamp = event.timeStamp
+
+            when (event.eventType) {
+                foregroundEvent() -> {
+                    // Ignore duplicate resume events for the same Activity.
+                    if (!activeActivities.containsKey(activityName)) {
+                        val wasPackageInactive = activeActivities.isEmpty()
+                        activeActivities[activityName] = timestamp
+
+                        if (wasPackageInactive) {
+                            packageSessionStart = maxOf(timestamp, dayStart)
+                        }
+                    }
+                }
+
+                backgroundEvent(),
+                UsageEvents.Event.ACTIVITY_STOPPED -> {
+                    // Only close an Activity that we actually considered active.
+                    if (activeActivities.remove(activityName) != null &&
+                        activeActivities.isEmpty() &&
+                        packageSessionStart != null
+                    ) {
+                        val start = maxOf(packageSessionStart!!, dayStart)
+                        val end = minOf(timestamp, dayEnd)
+
+                        if (end > start) {
+                            addDashboardIntervalToHours(
+                                buckets,
+                                dayStart,
+                                dayEnd,
+                                start,
+                                end
+                            )
+                        }
+
+                        packageSessionStart = null
+                    }
+                }
+            }
+        }
+
+        // App is still active when the query ends.
+        if (activeActivities.isNotEmpty() && packageSessionStart != null) {
+            val start = maxOf(packageSessionStart!!, dayStart)
+            val end = dayEnd
+
+            if (end > start) {
+                addDashboardIntervalToHours(
+                    buckets,
+                    dayStart,
+                    dayEnd,
+                    start,
+                    end
+                )
+            }
         }
 
         DashboardHourlyAppUsage(
@@ -613,45 +966,7 @@ fun AppSenseApp() {
         )
     }
 
-    // Android 13+ notification permission is optional for core tracking,
-    // but request it once before the splash so users are not dependent on
-    // the setup card remaining visible. Denial never blocks AppSense.
-    val notificationPrefs = remember {
-        context.getSharedPreferences("appsense_preferences", Context.MODE_PRIVATE)
-    }
-
-    var notificationPermissionGranted by remember {
-        mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        android.Manifest.permission.POST_NOTIFICATIONS
-                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        )
-    }
-
-    var notificationPromptCompleted by rememberSaveable {
-        mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                    notificationPermissionGranted ||
-                    notificationPrefs.getBoolean("notification_permission_prompted", false)
-        )
-    }
-
-    var notificationPromptInFlight by rememberSaveable {
-        mutableStateOf(false)
-    }
-
-    val notificationPermissionLauncher =
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.RequestPermission()
-        ) { granted ->
-            notificationPermissionGranted = granted
-            notificationPromptInFlight = false
-            notificationPromptCompleted = true
-        }
-
-    var showNameDialog by rememberSaveable {
+    var showNameDialog by remember {
         mutableStateOf(false)
     }
 
@@ -677,15 +992,22 @@ fun AppSenseApp() {
         mutableStateOf(false)
     }
 
-    var splashHandled by rememberSaveable {
+    var splashHandled by remember {
         mutableStateOf(false)
     }
 
-    var currentScreen by rememberSaveable {
+    var currentScreen by remember {
         mutableStateOf("dashboard")
     }
 
-    var detailPackage by rememberSaveable {
+    // Keep the last dashboard total while navigating to Stats and back.
+    // DashboardScreen is removed from composition during navigation, so its
+    // local state alone would restart from zero when opened again.
+    var cachedDashboardTotalUsage by remember {
+        mutableStateOf(0L)
+    }
+
+    var detailPackage by remember {
         mutableStateOf<String?>(null)
     }
 
@@ -713,14 +1035,6 @@ fun AppSenseApp() {
                         hasOverlayPermission(
                             context
                         )
-
-                    notificationPermissionGranted =
-                        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                                ContextCompat.checkSelfPermission(
-                                    context,
-                                    android.Manifest.permission.POST_NOTIFICATIONS
-                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
                 }
             }
 
@@ -741,8 +1055,6 @@ fun AppSenseApp() {
      *      ↓
      * Display over other apps
      *      ↓
-     * Optional notification permission (Android 13+, once)
-     *      ↓
      * AppSense splash
      *      ↓
      * Name dialog (first setup only)
@@ -753,10 +1065,7 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted,
-        notificationPermissionGranted,
-        notificationPromptCompleted,
-        notificationPromptInFlight
+        overlayPermissionGranted
     ) {
 
         if (
@@ -764,25 +1073,6 @@ fun AppSenseApp() {
             overlayPermissionGranted &&
             !splashHandled
         ) {
-
-            if (
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                !notificationPermissionGranted &&
-                !notificationPromptCompleted &&
-                !notificationPromptInFlight
-            ) {
-                // Persist before launching so denial does not cause a prompt loop.
-                notificationPrefs.edit()
-                    .putBoolean("notification_permission_prompted", true)
-                    .apply()
-                notificationPromptInFlight = true
-                notificationPermissionLauncher.launch(
-                    android.Manifest.permission.POST_NOTIFICATIONS
-                )
-                return@LaunchedEffect
-            }
-
-            if (notificationPromptInFlight) return@LaunchedEffect
 
             splashHandled = true
             showSplash = true
@@ -796,22 +1086,34 @@ fun AppSenseApp() {
                     UsageMonitorService::class.java
                 )
 
-            // minSdk is 26 (Android 8.0), so foreground-service API is available.
-            context.startForegroundService(serviceIntent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
 
             // Keep the splash short and smooth.
             delay(1800L)
 
             showSplash = false
 
-        }
-    }
+            val savedName =
+                context
+                    .getSharedPreferences(
+                        "appsense_preferences",
+                        Context.MODE_PRIVATE
+                    )
+                    .getString(
+                        "user_name",
+                        null
+                    )
 
-    // Keep first-time name onboarding independent from the splash delay.
-    // If rotation cancels the splash coroutine, this effect can still show the dialog.
-    LaunchedEffect(splashHandled, showSplash, userName) {
-        if (splashHandled && !showSplash && userName.isBlank()) {
-            showNameDialog = true
+            if (
+                savedName.isNullOrBlank()
+            ) {
+
+                showNameDialog = true
+            }
         }
     }
 
@@ -849,23 +1151,6 @@ fun AppSenseApp() {
         PermissionSetupScreen(
             usageAccessGranted = permissionGranted,
             overlayAccessGranted = overlayPermissionGranted,
-            notificationPermissionGranted = notificationPermissionGranted,
-
-            onRequestNotificationPermission = {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    notificationPrefs.edit()
-                        .putBoolean("notification_permission_prompted", true)
-                        .apply()
-                    notificationPromptCompleted = true
-                    notificationPermissionLauncher.launch(
-                        android.Manifest.permission.POST_NOTIFICATIONS
-                    )
-                } else {
-                    notificationPermissionGranted = true
-                    notificationPromptCompleted = true
-                }
-            },
-
             onGrantUsageAccess = {
                 context.startActivity(
                     Intent(
@@ -1044,6 +1329,7 @@ fun AppSenseApp() {
                     currentScreen =
                         "dashboard"
                 }
+
             }
         }
 
@@ -1056,6 +1342,10 @@ fun AppSenseApp() {
             DashboardScreen(
                 context = context,
                 savedName = userName,
+                initialTotalUsage = cachedDashboardTotalUsage,
+                onTotalUsageChanged = { usageMillis ->
+                    cachedDashboardTotalUsage = usageMillis
+                },
 
                 onAddApp = {
                     currentScreen =
@@ -1115,6 +1405,16 @@ fun AppSenseApp() {
 
                     currentScreen =
                         "detail"
+                }
+            )
+        }
+
+        "goals" -> {
+
+            GoalsScreen(
+                context = context,
+                onBack = {
+                    currentScreen = "dashboard"
                 }
             )
         }
@@ -1459,8 +1759,6 @@ private fun AppSenseSplashScreen() {
 fun PermissionSetupScreen(
     usageAccessGranted: Boolean,
     overlayAccessGranted: Boolean,
-    notificationPermissionGranted: Boolean,
-    onRequestNotificationPermission: () -> Unit,
     onGrantUsageAccess: () -> Unit,
     onGrantOverlayAccess: () -> Unit
 ) {
@@ -1516,18 +1814,6 @@ fun PermissionSetupScreen(
         )
 
         Spacer(
-            modifier = Modifier.height(16.dp)
-        )
-
-        PermissionCard(
-            title = "Foreground notification (optional)",
-            description = "Android uses this notification to show that AppSense monitoring is running. You can continue without it, but Android may limit notification visibility.",
-            granted = notificationPermissionGranted,
-            buttonText = if (notificationPermissionGranted) "Notification allowed" else "Allow notification",
-            onClick = onRequestNotificationPermission
-        )
-
-        Spacer(
             modifier = Modifier.height(28.dp)
         )
 
@@ -1536,11 +1822,11 @@ fun PermissionSetupScreen(
             enabled = allGranted,
             onClick = {
                 // AppSenseApp automatically continues when both
-                // permissions are detected.
+                // required permissions are detected.
             }
         ) {
             Text(
-                if (allGranted) "Continue" else "Complete required setup"
+                if (allGranted) "Continue" else "Complete all accesses"
             )
         }
     }
@@ -1629,6 +1915,8 @@ private fun PermissionCard(
 fun DashboardScreen(
     context: Context,
     savedName: String,
+    initialTotalUsage: Long,
+    onTotalUsageChanged: (Long) -> Unit,
     onAddApp: () -> Unit,
     onStats: () -> Unit,
     onNameChanged: (String) -> Unit,
@@ -1639,42 +1927,23 @@ fun DashboardScreen(
         loadSelectedApps(context)
     }
 
-    // Keep the dashboard date fresh when the Activity returns to the foreground,
-    // especially when the app remains alive across midnight.
-    var today by remember {
-        mutableStateOf(Calendar.getInstance())
+    val today = remember {
+        Calendar.getInstance()
     }
 
     var dashboardRefreshTick by remember {
         mutableIntStateOf(0)
     }
 
-    val lifecycleOwner =
-        androidx.lifecycle.compose.LocalLifecycleOwner.current
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                today = Calendar.getInstance()
-                dashboardRefreshTick++
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L)
-            today = Calendar.getInstance()
             dashboardRefreshTick++
         }
     }
 
     val totalUsage by produceState(
-        initialValue = 0L,
+        initialValue = initialTotalUsage,
         key1 = selectedApps,
         key2 = dashboardRefreshTick,
         key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
@@ -1688,6 +1957,11 @@ fun DashboardScreen(
                 )
             }
         }
+    }
+
+    // Publish each calculated value to the parent so it survives navigation.
+    LaunchedEffect(totalUsage) {
+        onTotalUsageChanged(totalUsage)
     }
 
     val dashboardHourlyData by produceState(
@@ -1705,11 +1979,11 @@ fun DashboardScreen(
         }
     }
 
-    val dateText = remember(today) {
+    val dateText = remember {
         SimpleDateFormat(
             "EEEE, d MMMM",
             Locale.getDefault()
-        ).format(today.time)
+        ).format(Date())
     }
 
     var showMenu by remember {
@@ -2058,7 +2332,8 @@ fun DashboardScreen(
                     ) {
                         hourlyTotals.forEachIndexed { hour, totalMillis ->
                             Column(
-                                modifier = Modifier.width(32.dp),
+                                // Wider columns keep labels such as "12 AM" readable.
+                                modifier = Modifier.width(40.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
@@ -2111,7 +2386,7 @@ fun DashboardScreen(
                                 Spacer(modifier = Modifier.height(6.dp))
 
                                 Text(
-                                    text = String.format(Locale.getDefault(), "%02d", hour),
+                                    text = "${if (hour % 12 == 0) 12 else hour % 12} ${if (hour < 12) "AM" else "PM"}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color(0xFF737782)
                                 )
@@ -2701,19 +2976,12 @@ fun AddedAppStatsScreen(
                                 )
                                 .toString()
 
-                        val usage by produceState(
-                            initialValue = 0L,
-                            packageName,
-                            today.timeInMillis
-                        ) {
-                            value = withContext(Dispatchers.IO) {
-                                getAppUsageForDate(
-                                    context,
-                                    packageName,
-                                    today
-                                )
-                            }
-                        }
+                        val usage =
+                            getAppUsageForDate(
+                                context,
+                                packageName,
+                                today
+                            )
 
                         AppUsageCard(
                             name =
@@ -2977,14 +3245,8 @@ fun DailyDetail(
     date: Calendar
 ) {
 
-    val total by produceState(
-        initialValue = 0L,
-        packageName,
-        date.timeInMillis
-    ) {
-        value = withContext(Dispatchers.IO) {
-            getAppUsageForDate(context, packageName, date)
-        }
+    val total = remember(packageName, date.timeInMillis) {
+        getAppUsageForDate(context, packageName, date)
     }
 
     Column(
@@ -2996,41 +3258,15 @@ fun DailyDetail(
             )
             .padding(24.dp)
     ) {
-        val isToday = run {
-            val today = Calendar.getInstance()
-            today.get(Calendar.YEAR) == date.get(Calendar.YEAR) &&
-                    today.get(Calendar.DAY_OF_YEAR) == date.get(Calendar.DAY_OF_YEAR)
-        }
-
-        val dateLabel = SimpleDateFormat(
-            "d MMM yyyy",
-            Locale.getDefault()
-        ).format(date.time)
-
-        val usageTitle =
-            if (isToday) {
-                "Today's usage"
-            } else {
-                "Usage on $dateLabel"
-            }
-
-        val displayAppName =
-            try {
-                val info = context.packageManager.getApplicationInfo(packageName, 0)
-                context.packageManager.getApplicationLabel(info).toString()
-            } catch (_: Exception) {
-                packageName
-            }
-
         Text(
-            text = usageTitle,
+            text = "Today's usage",
             style = MaterialTheme.typography.titleMedium
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "Total time spent in $displayAppName",
+            text = "Total time spent in $packageName",
             style = MaterialTheme.typography.bodySmall
         )
 
@@ -3061,26 +3297,11 @@ fun HourlyDetail(
     date: Calendar
 ) {
 
-    val sessions by produceState<List<UsageSession>?>(
-        initialValue = null,
-        packageName,
-        date.timeInMillis
-    ) {
-        value = withContext(Dispatchers.IO) {
-            getHourlySessions(context, packageName, date)
-        }
+    val sessions = remember(packageName, date.timeInMillis) {
+        getHourlySessions(context, packageName, date)
     }
 
-    if (sessions == null) {
-        Text(
-            text = "Loading usage sessions…",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(24.dp)
-        )
-        return
-    }
-
-    if (sessions!!.isEmpty()) {
+    if (sessions.isEmpty()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3114,7 +3335,7 @@ fun HourlyDetail(
             )
         }
 
-        items(sessions!!) { session ->
+        items(sessions) { session ->
             UsageSessionCard(session)
         }
     }
