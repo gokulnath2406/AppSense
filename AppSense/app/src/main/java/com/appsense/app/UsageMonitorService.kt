@@ -1,4 +1,3 @@
-
 package com.appsense.app
 
 import android.app.Notification
@@ -13,6 +12,7 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -21,6 +21,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Button
+import android.widget.ScrollView
 import android.os.Handler
 import android.os.Looper
 import android.content.pm.ServiceInfo
@@ -43,6 +44,7 @@ class UsageMonitorService : Service() {
 
         private const val YELLOW_AFTER_MS = 30L * 60L * 1000L
         private const val RED_AFTER_MS = 60L * 60L * 1000L
+        // Defaults used when SharedPreferences has not been configured yet.
         private const val FIRST_REMINDER_MS = 15L * 60L * 1000L
         private const val REPEAT_REMINDER_MS = 10L * 60L * 1000L
     }
@@ -56,7 +58,7 @@ class UsageMonitorService : Service() {
     private var overlayParams: WindowManager.LayoutParams? = null
 
     private var currentPackage: String? = null
-    private var sessionStartTime = 0L
+    private val sessionTracker = SessionTracker()
 
     private var lastForegroundPackage: String? = null
 
@@ -80,14 +82,22 @@ class UsageMonitorService : Service() {
     // The first prompt appears at 15 minutes; later prompts are spaced 10 minutes apart.
     private var nextReminderElapsedMs = FIRST_REMINDER_MS
     private var activeReminderType: String? = null
+    private var reminderElapsedMs = 0L
+    private var remindersInSession = 0
+    private var interventionOutcomeLogged = false
+    private var reminderContinueAtElapsedRealtimeMs = 0L
+    private var reminderCountdownRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var breathingRunnable: Runnable? = null
     private var breathingStep = 0
     private var gameCells = MutableList(9) { "" }
     private var gameFinished = false
     private var featurePanel: LinearLayout? = null
+    private var featureScrollView: ScrollView? = null
     private var featureStatusView: TextView? = null
     private var featureActionButton: Button? = null
+    private var continueButton: Button? = null
+    private var closeAppButton: Button? = null
     private var gameButtons: MutableList<Button> = mutableListOf()
 
     // Cached expanded-view children.
@@ -170,28 +180,10 @@ class UsageMonitorService : Service() {
     }
 
     private fun updateFloatingTimer() {
-
-        if (!Settings.canDrawOverlays(this)) {
-            hideFloatingTimer()
-            return
-        }
-
-        val powerManager =
-            getSystemService(POWER_SERVICE) as PowerManager
-
-        if (!powerManager.isInteractive) {
-            // The screen is off: do not retain a stale foreground package.
-            // Rebuild foreground state with the startup lookback when the
-            // screen becomes interactive again, so an already-open app can
-            // be detected without showing a ghost pill on the lock screen.
-            lastForegroundPackage = null
-            isForegroundStateInitialized = false
-            currentPackage = null
-            sessionStartTime = 0L
-            cachedUsageAt = 0L // Do not count screen-off time as app usage.
-            hideFloatingTimer()
-            return
-        }
+        // Runs on the monitoring thread. It gathers usage/foreground data and
+        // updates SessionTracker only; UI and intervention state are main-thread-owned.
+        val screenOn =
+            (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
 
         val selectedApps =
             getSharedPreferences(
@@ -205,90 +197,159 @@ class UsageMonitorService : Service() {
                 ?.toSet()
                 ?: emptySet()
 
-        if (selectedApps.isEmpty()) {
-            currentPackage = null
-            sessionStartTime = 0L
-            cachedUsageAt = 0L
-            hideFloatingTimer()
-            return
+        // Read lightweight intervention preferences on every monitoring tick so UI changes apply promptly.
+        val interventionSettings = InterventionPreferences.read(this)
+
+        if (!screenOn) {
+            // Foreground-event reconstruction state belongs to the monitoring thread.
+            lastForegroundPackage = null
+            isForegroundStateInitialized = false
         }
 
         val foregroundPackage =
-            getCurrentForegroundApp()
+            if (screenOn && selectedApps.isNotEmpty()) {
+                getCurrentForegroundApp()
+            } else {
+                null
+            }
 
-        if (
-            foregroundPackage != null &&
-            selectedApps.contains(foregroundPackage)
-        ) {
+        val trackedAppInForeground =
+            foregroundPackage != null && selectedApps.contains(foregroundPackage)
 
-            if (currentPackage != foregroundPackage) {
-                currentPackage = foregroundPackage
-                sessionStartTime = System.currentTimeMillis()
-                nextReminderElapsedMs = FIRST_REMINDER_MS
+        val elapsed = sessionTracker.onTick(
+            nowMonotonicMs = SystemClock.elapsedRealtime(),
+            trackedAppInForeground = trackedAppInForeground,
+            screenOn = screenOn
+        )
+        // Snapshot transition flags here because the next monitoring tick may change them.
+        val newSessionStarted = sessionTracker.newSessionStarted
+        val sessionEnded = sessionTracker.sessionEnded
+
+        val overlayAllowed = Settings.canDrawOverlays(this)
+        if (!overlayAllowed || !screenOn || selectedApps.isEmpty() || !trackedAppInForeground) {
+            mainHandler.post {
+                if (!screenOn || selectedApps.isEmpty() || !trackedAppInForeground) {
+                    currentPackage = null
+                }
+                if (sessionEnded) {
+                    resetReminderScheduleIfSessionEnded(true, interventionSettings.firstReminderMinutes * 60_000L)
+                    remindersInSession = 0
+                }
+                if (!screenOn || selectedApps.isEmpty() || !trackedAppInForeground) {
+                    cachedUsageAt = 0L
+                }
+                resetInterventionUi()
+                hideFloatingTimer()
+            }
+            return
+        }
+
+        val packageName = foregroundPackage ?: return
+        val nowWallClock = System.currentTimeMillis()
+        val todayTotal = getTodayUsage(packageName, nowWallClock)
+
+        mainHandler.post {
+            // The session may span tracked-app switches and short untracked gaps.
+            val firstReminderMs = interventionSettings.firstReminderMinutes * 60_000L
+            val repeatReminderMs = interventionSettings.repeatReminderMinutes * 60_000L
+            if (newSessionStarted) {
+                nextReminderElapsedMs = firstReminderMs
+                remindersInSession = 0
+            }
+            if (sessionEnded) {
+                resetReminderScheduleIfSessionEnded(true, firstReminderMs)
+                remindersInSession = 0
+            }
+
+            // Settings changes take effect on the next tick, including disabling an active intervention.
+            if (!interventionSettings.interventionEnabled ||
+                (activeReminderType == "breathing" && !interventionSettings.breathingEnabled) ||
+                (activeReminderType == "game" && !interventionSettings.gameEnabled)
+            ) {
+                resetInterventionUi()
+            }
+
+            if (currentPackage != packageName) {
+                currentPackage = packageName
                 activeReminderType = null
                 cancelBreathingExercise()
-            }
 
-            val now =
-                System.currentTimeMillis()
-
-            val elapsed =
-                now - sessionStartTime
-
-            // Emoji + color are based on TODAY'S TOTAL usage.
-            // The visible timer remains the current session duration.
-            val todayTotal =
-                getTodayUsage(
-                    foregroundPackage,
-                    now
-                )
-
-            showFloatingTimer(
-                elapsed,
-                todayTotal
-            )
-
-            if (elapsed >= nextReminderElapsedMs) {
-                // Advance before posting to the UI thread so polling cannot queue duplicates.
-                // Do not replace an intervention the user is currently using; the next
-                // reminder remains scheduled 10 minutes later.
-                nextReminderElapsedMs = elapsed + REPEAT_REMINDER_MS
-                if (activeReminderType == null) {
-                    val reminderType = if (kotlin.random.Random.nextBoolean()) "breathing" else "game"
-                    overlayView?.post {
-                        if (
-                            currentPackage == foregroundPackage &&
-                            activeReminderType == null &&
-                            Settings.canDrawOverlays(this)
-                        ) {
-                            activeReminderType = reminderType
-                            if (!isExpanded) expandFloatingTimer()
-                            renderReminderPanel()
-                        }
-                    }
+                // Collapse any reminder expanded for the previous tracked app.
+                if (isExpanded) {
+                    collapseFloatingTimer()
                 }
             }
 
-        } else {
+            showFloatingTimer(elapsed, todayTotal)
 
-            currentPackage = null
-            sessionStartTime = 0L
-            // Invalidate the extrapolation anchor so time spent in other apps
-            // or on the launcher is never added to this package's cached usage.
-            cachedUsageAt = 0L
-
-            if (isExpanded) {
-                // Window/View operations must run on the main thread.
-                // Keep the existing collapse logic unchanged; only dispatch
-                // the UI operation safely to the view's main-thread queue.
-                overlayView?.post {
-                    if (isExpanded) {
-                        collapseFloatingTimer()
-                    }
-                }
+            if (remindersInSession == 0) {
+                // Keep the configurable first threshold in effect until the first reminder is shown.
+                nextReminderElapsedMs = firstReminderMs
+            } else {
+                // Recalculate from the last reminder so repeat-interval edits take effect next tick.
+                nextReminderElapsedMs = reminderElapsedMs + repeatReminderMs
             }
 
-            hideFloatingTimer()
+            val anyInterventionTypeEnabled =
+                interventionSettings.breathingEnabled || interventionSettings.gameEnabled
+            if (
+                elapsed >= nextReminderElapsedMs &&
+                interventionSettings.interventionEnabled &&
+                anyInterventionTypeEnabled &&
+                activeReminderType == null &&
+                Settings.canDrawOverlays(this) &&
+                currentPackage == packageName
+            ) {
+                activeReminderType = when {
+                    interventionSettings.breathingEnabled && interventionSettings.gameEnabled ->
+                        if (kotlin.random.Random.nextBoolean()) "breathing" else "game"
+                    interventionSettings.breathingEnabled -> "breathing"
+                    else -> "game"
+                }
+                reminderElapsedMs = elapsed
+                remindersInSession++
+                interventionOutcomeLogged = false
+                val countdownSeconds = min(remindersInSession * 5, 20)
+                reminderContinueAtElapsedRealtimeMs =
+                    SystemClock.elapsedRealtime() + countdownSeconds * 1000L
+                gameCells = MutableList(9) { "" }
+                gameFinished = false
+                // Schedule repeats from the actual reminder time; if interventions are disabled,
+                // the pending threshold remains eligible when the user re-enables them.
+                nextReminderElapsedMs = elapsed + repeatReminderMs
+                updateOutsideTouchLayerTouchability()
+
+                if (!isExpanded) {
+                    expandFloatingTimer()
+                }
+                renderReminderPanel()
+                InterventionDailyLogStore.recordShown(this)
+            }
+        }
+    }
+
+    private fun resetReminderScheduleIfSessionEnded(
+        sessionEnded: Boolean,
+        firstReminderMs: Long = FIRST_REMINDER_MS
+    ) {
+        // Caller must be on the main thread; do not read SessionTracker from here.
+        if (sessionEnded) {
+            nextReminderElapsedMs = firstReminderMs
+            reminderElapsedMs = 0L
+        }
+    }
+
+    private fun logInterventionCompletedOnce() {
+        if (!interventionOutcomeLogged) {
+            interventionOutcomeLogged = true
+            InterventionDailyLogStore.recordCompleted(this)
+        }
+    }
+
+    private fun logInterventionDismissedOnce() {
+        if (!interventionOutcomeLogged) {
+            interventionOutcomeLogged = true
+            InterventionDailyLogStore.recordDismissed(this)
         }
     }
 
@@ -459,7 +520,8 @@ class UsageMonitorService : Service() {
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 height,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        if (activeReminderType != null) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0,
                 PixelFormat.TRANSLUCENT
             ).apply {
 
@@ -816,26 +878,37 @@ class UsageMonitorService : Service() {
     }
 
     private fun renderReminderPanel() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { renderReminderPanel() }
+            return
+        }
+
         val view = overlayView ?: return
-        val params = overlayParams ?: return
+        if (overlayParams == null) return
         val type = activeReminderType ?: return
         if (!isExpanded) return
 
         // Rebuild only the optional intervention area; the timer and usage rows stay intact.
         while (view.childCount > 3) view.removeViewAt(3)
         featurePanel = null
+        featureScrollView = null
         featureStatusView = null
         featureActionButton = null
+        continueButton = null
+        closeAppButton = null
+        cancelReminderCountdown()
         gameButtons.clear()
 
         val density = resources.displayMetrics.density
+        val reminderMinutes = (reminderElapsedMs / 60_000L).toInt()
+        val minuteLabel = if (reminderMinutes == 1) "minute" else "minutes"
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding((4 * density).toInt(), (3 * density).toInt(), (4 * density).toInt(), (3 * density).toInt())
         }
         val status = TextView(this).apply {
-            text = if (type == "breathing") "15 minutes here. Take a 10-second reset." else "15 minutes here. Take a quick play break."
+            text = if (type == "breathing") "$reminderMinutes $minuteLabel in this session. Take a 10-second reset." else "$reminderMinutes $minuteLabel in this session. Take a quick play break."
             textSize = 12f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
@@ -852,23 +925,172 @@ class UsageMonitorService : Service() {
                 if (type == "breathing") startBreathingExercise() else startTicTacToe()
             }
         }
-        panel.addView(status, LinearLayout.LayoutParams(-1, (42 * density).toInt()))
-        panel.addView(action, LinearLayout.LayoutParams(-1, (42 * density).toInt()))
-        view.addView(panel, LinearLayout.LayoutParams(-1, -2))
+        status.minHeight = (42 * density).toInt()
+        action.minHeight = (42 * density).toInt()
+        panel.addView(status, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(action, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        val continueAction = Button(this).apply {
+            isAllCaps = false
+            setOnClickListener {
+                if (SystemClock.elapsedRealtime() >= reminderContinueAtElapsedRealtimeMs) {
+                    logInterventionDismissedOnce()
+                    activeReminderType = null
+                    cancelBreathingExercise()
+                    cancelReminderCountdown()
+                    collapseFloatingTimer()
+                }
+            }
+        }
+        val closeAppAction = Button(this).apply {
+            text = "Close app"
+            isAllCaps = false
+            setOnClickListener { closeCurrentAppToHome() }
+        }
+        panel.addView(continueAction, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(closeAppAction, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // Keep the intervention content scrollable when the display or font scale is constrained.
+        val scrollView = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            addView(panel, -1, -2)
+        }
+        val scrollHeightDp = if (type == "game" && gameCells.any { it.isNotEmpty() }) 260 else 180
+        view.addView(scrollView, LinearLayout.LayoutParams(-1, (scrollHeightDp * density).toInt()))
         featurePanel = panel
+        featureScrollView = scrollView
         featureStatusView = status
         featureActionButton = action
+        continueButton = continueAction
+        closeAppButton = closeAppAction
+        updateReminderCountdownButton()
+        startReminderCountdown()
 
         // The intervention card grows only while a prompt/game is active.
-        params.width = (280 * density).toInt()
-        params.height = if (type == "game" && gameCells.any { it.isNotEmpty() }) (340 * density).toInt() else (220 * density).toInt()
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-        params.x = params.x.coerceIn(0, max(0, screenWidth - params.width))
-        params.y = params.y.coerceIn(0, max(0, screenHeight - params.height))
-        try { windowManager.updateViewLayout(view, params) } catch (_: Exception) { }
+        applyCardSize(
+            280,
+            if (type == "game" && gameCells.any { it.isNotEmpty() }) 430 else 350
+        )
 
         if (type == "game" && gameCells.any { it.isNotEmpty() }) renderGameBoard()
+    }
+
+    private fun updateReminderCountdownButton() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { updateReminderCountdownButton() }
+            return
+        }
+        val button = continueButton ?: return
+        val remainingMs = (reminderContinueAtElapsedRealtimeMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        val remainingSeconds = ((remainingMs + 999L) / 1000L).toInt()
+        button.text = if (remainingSeconds > 0) "Continue ($remainingSeconds)" else "Continue"
+        button.isEnabled = remainingMs == 0L
+    }
+
+    private fun startReminderCountdown() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { startReminderCountdown() }
+            return
+        }
+        cancelReminderCountdown()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (activeReminderType == null || continueButton == null) return
+                updateReminderCountdownButton()
+                if (SystemClock.elapsedRealtime() < reminderContinueAtElapsedRealtimeMs) {
+                    mainHandler.postDelayed(this, 250L)
+                }
+            }
+        }
+        reminderCountdownRunnable = runnable
+        mainHandler.post(runnable)
+    }
+
+    private fun cancelReminderCountdown() {
+        reminderCountdownRunnable?.let { mainHandler.removeCallbacks(it) }
+        reminderCountdownRunnable = null
+    }
+
+    private fun closeCurrentAppToHome() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { closeCurrentAppToHome() }
+            return
+        }
+        logInterventionDismissedOnce()
+        try {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(homeIntent)
+            activeReminderType = null
+            cancelBreathingExercise()
+            cancelReminderCountdown()
+            collapseFloatingTimer()
+        } catch (_: Exception) {
+            featureStatusView?.text = "Couldn't open Home automatically. Press your phone's Home button."
+        }
+    }
+
+    private fun updateOutsideTouchLayerTouchability() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { updateOutsideTouchLayerTouchability() }
+            return
+        }
+        val layer = outsideTouchView ?: return
+        val params = layer.layoutParams as? WindowManager.LayoutParams ?: return
+        val shouldPassTouchesThrough = activeReminderType != null
+        val desiredFlags = if (shouldPassTouchesThrough) {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
+        if (params.flags != desiredFlags) {
+            params.flags = desiredFlags
+            try {
+                windowManager.updateViewLayout(layer, params)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun applyCardSize(widthDp: Int, heightDp: Int) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { applyCardSize(widthDp, heightDp) }
+            return
+        }
+
+        val params = overlayParams ?: return
+        val view = overlayView ?: return
+        val density = resources.displayMetrics.density
+        val margin = (EDGE_MARGIN_DP * density).toInt()
+
+        val screenWidth: Int
+        val screenHeight: Int
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.currentWindowMetrics.bounds
+            screenWidth = bounds.width()
+            screenHeight = bounds.height()
+        } else {
+            screenWidth = resources.displayMetrics.widthPixels
+            screenHeight = resources.displayMetrics.heightPixels
+        }
+
+        params.width = min((widthDp * density).toInt(), max(1, screenWidth - margin * 2))
+        params.height = min((heightDp * density).toInt(), max(1, screenHeight - margin * 2))
+
+        val maxX = max(0, screenWidth - params.width - margin)
+        val minX = min(margin, maxX)
+        val maxY = max(0, screenHeight - params.height - margin)
+        val minY = min(margin, maxY)
+        params.x = params.x.coerceIn(minX, maxX)
+        params.y = params.y.coerceIn(minY, maxY)
+
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+        }
     }
 
     private fun startBreathingExercise() {
@@ -885,7 +1107,10 @@ class UsageMonitorService : Service() {
             status.text = "Reset complete. Ready to continue?"
             featureActionButton?.text = "Done"
             featureActionButton?.setOnClickListener {
+                logInterventionCompletedOnce()
                 activeReminderType = null
+                cancelReminderCountdown()
+                updateOutsideTouchLayerTouchability()
                 collapseFloatingTimer()
             }
             return
@@ -902,6 +1127,23 @@ class UsageMonitorService : Service() {
         breathingRunnable = null
     }
 
+    private fun resetInterventionUi() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { resetInterventionUi() }
+            return
+        }
+
+        if (!isExpanded && activeReminderType == null) return
+
+        cancelBreathingExercise()
+        cancelReminderCountdown()
+        activeReminderType = null
+        updateOutsideTouchLayerTouchability()
+        if (isExpanded) {
+            collapseFloatingTimer()
+        }
+    }
+
     private fun startTicTacToe() {
         gameCells = MutableList(9) { "" }
         gameFinished = false
@@ -912,10 +1154,24 @@ class UsageMonitorService : Service() {
     }
 
     private fun renderGameBoard() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { renderGameBoard() }
+            return
+        }
+
         val panel = featurePanel ?: return
         val density = resources.displayMetrics.density
-        // Remove any previous board rows while retaining status and action controls.
-        while (panel.childCount > 2) panel.removeViewAt(2)
+        // Allow the board and intervention text to scroll inside the bounded card.
+        featureScrollView?.let { scrollView ->
+            val scrollParams = scrollView.layoutParams as? LinearLayout.LayoutParams
+            if (scrollParams != null) {
+                scrollParams.height = (260 * density).toInt()
+                scrollView.layoutParams = scrollParams
+            }
+        }
+
+        // Remove previous board rows while retaining status and all three action buttons.
+        while (panel.childCount > 4) panel.removeViewAt(4)
         gameButtons.clear()
         repeat(3) { rowIndex ->
             val row = LinearLayout(this).apply {
@@ -931,6 +1187,7 @@ class UsageMonitorService : Service() {
                     setPadding(0, 0, 0, 0)
                     setOnClickListener {
                         if (gameFinished || gameCells[index].isNotEmpty()) return@setOnClickListener
+                        logInterventionCompletedOnce()
                         gameCells[index] = "X"
                         if (hasWinner("X")) {
                             gameFinished = true
@@ -954,19 +1211,16 @@ class UsageMonitorService : Service() {
                         renderGameBoard()
                     }
                 }
-                row.addView(cell, LinearLayout.LayoutParams(0, (42 * density).toInt(), 1f).apply {
+                cell.minHeight = (42 * density).toInt()
+                row.addView(cell, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                     setMargins((2 * density).toInt(), (1 * density).toInt(), (2 * density).toInt(), (1 * density).toInt())
                 })
                 gameButtons.add(cell)
             }
-            panel.addView(row, LinearLayout.LayoutParams(-1, (44 * density).toInt()))
+            row.minimumHeight = (44 * density).toInt()
+            panel.addView(row, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
-        val params = overlayParams
-        val view = overlayView
-        if (params != null && view != null) {
-            params.height = (340 * density).toInt()
-            try { windowManager.updateViewLayout(view, params) } catch (_: Exception) { }
-        }
+        applyCardSize(280, 340)
     }
 
     private fun hasWinner(mark: String): Boolean {
@@ -989,9 +1243,15 @@ class UsageMonitorService : Service() {
         if (!isExpanded) return
 
         isExpanded = false
+        gameCells = MutableList(9) { "" }
+        gameFinished = false
         cancelBreathingExercise()
+        cancelReminderCountdown()
         activeReminderType = null
+        continueButton = null
+        closeAppButton = null
         featurePanel = null
+        featureScrollView = null
         featureStatusView = null
         featureActionButton = null
         gameButtons.clear()
@@ -1074,10 +1334,11 @@ class UsageMonitorService : Service() {
 
                 setOnTouchListener { _, event ->
 
-                    if (
-                        event.actionMasked ==
-                        MotionEvent.ACTION_DOWN
-                    ) {
+                    if (activeReminderType != null) {
+                        // During an intervention this layer is NOT_TOUCHABLE, so normal app
+                        // gestures pass through. Keep this guard for a state-change race.
+                        true
+                    } else if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         collapseFloatingTimer()
                         true
                     } else {
@@ -1093,7 +1354,8 @@ class UsageMonitorService : Service() {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        (if (activeReminderType != null) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0),
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity =
@@ -1306,6 +1568,7 @@ class UsageMonitorService : Service() {
 
     override fun onDestroy() {
 
+        resetInterventionUi()
         isMonitoring = false
         cancelBreathingExercise()
 
@@ -1343,3 +1606,4 @@ class UsageMonitorService : Service() {
         return null
     }
 }
+

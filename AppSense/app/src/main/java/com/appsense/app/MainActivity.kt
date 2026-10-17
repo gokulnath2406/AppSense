@@ -13,6 +13,8 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,12 +46,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -107,7 +110,12 @@ class MainActivity : ComponentActivity() {
         ).isAppearanceLightStatusBars = true
 
         setContent {
-            AppSenseTheme {
+            // Keep AppSense on a light Material theme so hardcoded light UI
+            // colors and Material components remain readable in device dark mode.
+            AppSenseTheme(
+                darkTheme = false,
+                dynamicColor = false
+            ) {
                 AppSenseApp()
             }
         }
@@ -343,161 +351,21 @@ private fun getUsageSessions(
     packageName: String,
     date: Calendar
 ): List<UsageSession> {
+    val dayStart = getDayStart(date)
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
+    if (dayEnd <= dayStart) return emptyList()
 
-    val dayStart =
-        getDayStart(date)
-
-    val dayEnd =
-        getDayEnd(date)
-
-    val now =
-        System.currentTimeMillis()
-
-    val queryEnd =
-        minOf(
-            dayEnd,
-            now
+    return AppSenseUsageCalculator.getIntervals(
+        context = context,
+        packageName = packageName,
+        dayStart = dayStart,
+        dayEnd = dayEnd
+    ).map { interval ->
+        UsageSession(
+            startTime = interval.startTime,
+            endTime = interval.endTime,
+            durationMillis = interval.endTime - interval.startTime
         )
-
-    if (
-        queryEnd <= dayStart
-    ) {
-        return emptyList()
-    }
-
-    val usageManager =
-        context.getSystemService(
-            Context.USAGE_STATS_SERVICE
-        ) as UsageStatsManager
-
-    val events =
-        usageManager.queryEvents(
-            dayStart,
-            queryEnd
-        )
-
-    val event =
-        UsageEvents.Event()
-
-    val sessions =
-        mutableListOf<UsageSession>()
-
-    var openTime:
-            Long? = null
-
-    while (
-        events.hasNextEvent()
-    ) {
-
-        events.getNextEvent(event)
-
-        if (
-            event.packageName !=
-            packageName
-        ) {
-            continue
-        }
-
-        when (
-            event.eventType
-        ) {
-
-            foregroundEvent() -> {
-
-                if (
-                    openTime == null
-                ) {
-
-                    openTime =
-                        event.timeStamp
-                }
-            }
-
-            backgroundEvent() -> {
-
-                val start =
-                    openTime
-
-                if (
-                    start != null &&
-                    event.timeStamp > start
-                ) {
-
-                    val actualStart =
-                        maxOf(
-                            start,
-                            dayStart
-                        )
-
-                    val actualEnd =
-                        minOf(
-                            event.timeStamp,
-                            dayEnd
-                        )
-
-                    if (
-                        actualEnd >
-                        actualStart
-                    ) {
-
-                        sessions.add(
-                            UsageSession(
-                                startTime =
-                                    actualStart,
-
-                                endTime =
-                                    actualEnd,
-
-                                durationMillis =
-                                    actualEnd -
-                                            actualStart
-                            )
-                        )
-                    }
-
-                    openTime =
-                        null
-                }
-            }
-        }
-    }
-
-    if (
-        openTime != null
-    ) {
-
-        val actualStart =
-            maxOf(
-                openTime!!,
-                dayStart
-            )
-
-        val actualEnd =
-            queryEnd
-
-        if (
-            actualEnd >
-            actualStart
-        ) {
-
-            sessions.add(
-                UsageSession(
-                    startTime =
-                        actualStart,
-
-                    endTime =
-                        actualEnd,
-
-                    durationMillis =
-                        actualEnd -
-                                actualStart
-                )
-            )
-        }
-    }
-
-    return sessions.sortedBy {
-        it.startTime
     }
 }
 
@@ -510,172 +378,21 @@ private fun getAppUsageForDate(
     packageName: String,
     date: Calendar
 ): Long {
+    val dayStart = getDayStart(date)
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
+    if (dayEnd <= dayStart) return 0L
 
-    val dayStart =
-        getDayStart(date)
-
-    val dayEnd =
-        minOf(
-            getDayEnd(date),
-            System.currentTimeMillis()
-        )
-
-    if (
-        dayEnd <= dayStart
-    ) {
-        return 0L
-    }
-
-    val usageManager =
-        context.getSystemService(
-            Context.USAGE_STATS_SERVICE
-        ) as UsageStatsManager
-
-    val queryStart =
-        dayStart -
-                (
-                        24L *
-                                60L *
-                                60L *
-                                1000L
-                        )
-
-    val events =
-        usageManager.queryEvents(
-            queryStart,
-            dayEnd
-        )
-
-    val event =
-        UsageEvents.Event()
-
-    val activeActivities =
-        mutableSetOf<String>()
-
-    var sessionStart:
-            Long? = null
-
-    var totalUsage =
-        0L
-
-    while (
-        events.hasNextEvent()
-    ) {
-
-        events.getNextEvent(event)
-
-        if (
-            event.packageName !=
-            packageName
-        ) {
-            continue
-        }
-
-        val activityName =
-            event.className ?: ""
-
-        when (
-            event.eventType
-        ) {
-
-            foregroundEvent() -> {
-
-                val wasEmpty =
-                    activeActivities.isEmpty()
-
-                activeActivities.add(
-                    activityName
-                )
-
-                if (
-                    wasEmpty &&
-                    event.timeStamp >=
-                    dayStart
-                ) {
-
-                    sessionStart =
-                        event.timeStamp
-                }
-            }
-
-            backgroundEvent() -> {
-
-                activeActivities.remove(
-                    activityName
-                )
-
-                if (
-                    activeActivities.isEmpty() &&
-                    sessionStart != null
-                ) {
-
-                    val start =
-                        maxOf(
-                            sessionStart!!,
-                            dayStart
-                        )
-
-                    val end =
-                        minOf(
-                            event.timeStamp,
-                            dayEnd
-                        )
-
-                    if (
-                        end > start
-                    ) {
-
-                        totalUsage +=
-                            end - start
-                    }
-
-                    sessionStart =
-                        null
-                }
-            }
-        }
-
-        if (
-            event.timeStamp <
-            dayStart &&
-            activeActivities.isNotEmpty()
-        ) {
-
-            sessionStart =
-                dayStart
-        }
-    }
-
-    if (
-        activeActivities.isNotEmpty() &&
-        sessionStart != null
-    ) {
-
-        val start =
-            maxOf(
-                sessionStart!!,
-                dayStart
-            )
-
-        val end =
-            dayEnd
-
-        if (
-            end > start
-        ) {
-
-            totalUsage +=
-                end - start
-        }
-    }
-
-    return totalUsage
+    return AppSenseUsageCalculator.getIntervals(
+        context = context,
+        packageName = packageName,
+        dayStart = dayStart,
+        dayEnd = dayEnd
+    ).sumOf { it.endTime - it.startTime }
 }
 
 /* =========================================================
    DASHBOARD CHART DATA
-   Read-only dashboard aggregation. Existing usage/session
-   functions are intentionally left unchanged.
+   Hourly buckets are derived from the shared usage intervals.
    ========================================================= */
 
 private fun addDashboardIntervalToHours(
@@ -745,100 +462,31 @@ private fun getDashboardHourlyUsage(
     packageNames: Set<String>,
     date: Calendar
 ): List<DashboardHourlyAppUsage> {
-
     if (packageNames.isEmpty()) return emptyList()
 
     val dayStart = getDayStart(date)
-    val dayEnd = minOf(
-        getDayEnd(date),
-        System.currentTimeMillis()
-    )
-
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
     if (dayEnd <= dayStart) return emptyList()
 
-    val usageManager =
-        context.getSystemService(
-            Context.USAGE_STATS_SERVICE
-        ) as UsageStatsManager
-
-    val labelsByPackage =
-        getInstalledApps(context).associateBy { it.packageName }
+    val labelsByPackage = getInstalledApps(context).associateBy { it.packageName }
 
     return packageNames.map { packageName ->
         val buckets = LongArray(24)
+        val intervals = AppSenseUsageCalculator.getIntervals(
+            context = context,
+            packageName = packageName,
+            dayStart = dayStart,
+            dayEnd = dayEnd
+        )
 
-        // Query before midnight so an app already in the foreground
-        // at 00:00 is counted from the start of this day.
-        val queryStart = dayStart - 24L * 60L * 60L * 1000L
-        val events = usageManager.queryEvents(queryStart, dayEnd)
-        val event = UsageEvents.Event()
-
-        // Track each Activity independently. Android UsageEvents are
-        // Activity-level events, so one Boolean/openTime is not enough.
-        val activeActivities = mutableMapOf<String, Long>()
-        var packageSessionStart: Long? = null
-
-        while (events.hasNextEvent()) {
-            events.getNextEvent(event)
-
-            if (event.packageName != packageName) continue
-
-            val activityName = event.className ?: ""
-            val timestamp = event.timeStamp
-
-            when (event.eventType) {
-                foregroundEvent() -> {
-                    // Ignore duplicate resume events for the same Activity.
-                    if (!activeActivities.containsKey(activityName)) {
-                        val wasPackageInactive = activeActivities.isEmpty()
-                        activeActivities[activityName] = timestamp
-
-                        if (wasPackageInactive) {
-                            packageSessionStart = maxOf(timestamp, dayStart)
-                        }
-                    }
-                }
-
-                backgroundEvent(),
-                UsageEvents.Event.ACTIVITY_STOPPED -> {
-                    // Only close an Activity that we actually considered active.
-                    if (activeActivities.remove(activityName) != null &&
-                        activeActivities.isEmpty() &&
-                        packageSessionStart != null
-                    ) {
-                        val start = maxOf(packageSessionStart!!, dayStart)
-                        val end = minOf(timestamp, dayEnd)
-
-                        if (end > start) {
-                            addDashboardIntervalToHours(
-                                buckets,
-                                dayStart,
-                                dayEnd,
-                                start,
-                                end
-                            )
-                        }
-
-                        packageSessionStart = null
-                    }
-                }
-            }
-        }
-
-        // App is still active when the query ends.
-        if (activeActivities.isNotEmpty() && packageSessionStart != null) {
-            val start = maxOf(packageSessionStart!!, dayStart)
-            val end = dayEnd
-
-            if (end > start) {
-                addDashboardIntervalToHours(
-                    buckets,
-                    dayStart,
-                    dayEnd,
-                    start,
-                    end
-                )
-            }
+        intervals.forEach { interval ->
+            addDashboardIntervalToHours(
+                buckets = buckets,
+                dayStart = dayStart,
+                dayEnd = dayEnd,
+                startTime = interval.startTime,
+                endTime = interval.endTime
+            )
         }
 
         DashboardHourlyAppUsage(
@@ -966,7 +614,45 @@ fun AppSenseApp() {
         )
     }
 
-    var showNameDialog by remember {
+    // Android 13+ notification permission is optional for core tracking,
+    // but request it once before the splash so users are not dependent on
+    // the setup card remaining visible. Denial never blocks AppSense.
+    val notificationPrefs = remember {
+        context.getSharedPreferences("appsense_preferences", Context.MODE_PRIVATE)
+    }
+
+    var notificationPermissionGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    var notificationPromptCompleted by rememberSaveable {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    notificationPermissionGranted ||
+                    notificationPrefs.getBoolean("notification_permission_prompted", false)
+        )
+    }
+
+    var notificationPromptInFlight by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    val notificationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            notificationPermissionGranted = granted
+            notificationPromptInFlight = false
+            notificationPromptCompleted = true
+        }
+
+    var showNameDialog by rememberSaveable {
         mutableStateOf(false)
     }
 
@@ -992,22 +678,15 @@ fun AppSenseApp() {
         mutableStateOf(false)
     }
 
-    var splashHandled by remember {
+    var splashHandled by rememberSaveable {
         mutableStateOf(false)
     }
 
-    var currentScreen by remember {
+    var currentScreen by rememberSaveable {
         mutableStateOf("dashboard")
     }
 
-    // Keep the last dashboard total while navigating to Stats and back.
-    // DashboardScreen is removed from composition during navigation, so its
-    // local state alone would restart from zero when opened again.
-    var cachedDashboardTotalUsage by remember {
-        mutableStateOf(0L)
-    }
-
-    var detailPackage by remember {
+    var detailPackage by rememberSaveable {
         mutableStateOf<String?>(null)
     }
 
@@ -1035,6 +714,14 @@ fun AppSenseApp() {
                         hasOverlayPermission(
                             context
                         )
+
+                    notificationPermissionGranted =
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                                ContextCompat.checkSelfPermission(
+                                    context,
+                                    android.Manifest.permission.POST_NOTIFICATIONS
+                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
                 }
             }
 
@@ -1055,6 +742,8 @@ fun AppSenseApp() {
      *      ↓
      * Display over other apps
      *      ↓
+     * Optional notification permission (Android 13+, once)
+     *      ↓
      * AppSense splash
      *      ↓
      * Name dialog (first setup only)
@@ -1065,7 +754,10 @@ fun AppSenseApp() {
      */
     LaunchedEffect(
         permissionGranted,
-        overlayPermissionGranted
+        overlayPermissionGranted,
+        notificationPermissionGranted,
+        notificationPromptCompleted,
+        notificationPromptInFlight
     ) {
 
         if (
@@ -1073,6 +765,25 @@ fun AppSenseApp() {
             overlayPermissionGranted &&
             !splashHandled
         ) {
+
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !notificationPermissionGranted &&
+                !notificationPromptCompleted &&
+                !notificationPromptInFlight
+            ) {
+                // Persist before launching so denial does not cause a prompt loop.
+                notificationPrefs.edit()
+                    .putBoolean("notification_permission_prompted", true)
+                    .apply()
+                notificationPromptInFlight = true
+                notificationPermissionLauncher.launch(
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                )
+                return@LaunchedEffect
+            }
+
+            if (notificationPromptInFlight) return@LaunchedEffect
 
             splashHandled = true
             showSplash = true
@@ -1086,34 +797,22 @@ fun AppSenseApp() {
                     UsageMonitorService::class.java
                 )
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
+            // minSdk is 26 (Android 8.0), so foreground-service API is available.
+            context.startForegroundService(serviceIntent)
 
             // Keep the splash short and smooth.
             delay(1800L)
 
             showSplash = false
 
-            val savedName =
-                context
-                    .getSharedPreferences(
-                        "appsense_preferences",
-                        Context.MODE_PRIVATE
-                    )
-                    .getString(
-                        "user_name",
-                        null
-                    )
+        }
+    }
 
-            if (
-                savedName.isNullOrBlank()
-            ) {
-
-                showNameDialog = true
-            }
+    // Keep first-time name onboarding independent from the splash delay.
+    // If rotation cancels the splash coroutine, this effect can still show the dialog.
+    LaunchedEffect(splashHandled, showSplash, userName) {
+        if (splashHandled && !showSplash && userName.isBlank()) {
+            showNameDialog = true
         }
     }
 
@@ -1151,6 +850,23 @@ fun AppSenseApp() {
         PermissionSetupScreen(
             usageAccessGranted = permissionGranted,
             overlayAccessGranted = overlayPermissionGranted,
+            notificationPermissionGranted = notificationPermissionGranted,
+
+            onRequestNotificationPermission = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    notificationPrefs.edit()
+                        .putBoolean("notification_permission_prompted", true)
+                        .apply()
+                    notificationPromptCompleted = true
+                    notificationPermissionLauncher.launch(
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    )
+                } else {
+                    notificationPermissionGranted = true
+                    notificationPromptCompleted = true
+                }
+            },
+
             onGrantUsageAccess = {
                 context.startActivity(
                     Intent(
@@ -1325,11 +1041,14 @@ fun AppSenseApp() {
                         "dashboard"
                 }
 
+                "intervention_settings" -> {
+                    currentScreen = "dashboard"
+                }
+
                 "add_app" -> {
                     currentScreen =
                         "dashboard"
                 }
-
             }
         }
 
@@ -1342,10 +1061,6 @@ fun AppSenseApp() {
             DashboardScreen(
                 context = context,
                 savedName = userName,
-                initialTotalUsage = cachedDashboardTotalUsage,
-                onTotalUsageChanged = { usageMillis ->
-                    cachedDashboardTotalUsage = usageMillis
-                },
 
                 onAddApp = {
                     currentScreen =
@@ -1364,6 +1079,10 @@ fun AppSenseApp() {
                 onGoals = {
                     currentScreen =
                         "goals"
+                },
+
+                onInterventionSettings = {
+                    currentScreen = "intervention_settings"
                 }
             )
         }
@@ -1409,16 +1128,6 @@ fun AppSenseApp() {
             )
         }
 
-        "goals" -> {
-
-            GoalsScreen(
-                context = context,
-                onBack = {
-                    currentScreen = "dashboard"
-                }
-            )
-        }
-
         "detail" -> {
 
             detailPackage?.let {
@@ -1435,6 +1144,202 @@ fun AppSenseApp() {
                             "stats"
                     }
                 )
+            }
+        }
+
+        "goals" -> {
+            GoalsScreen(
+                context = context,
+                onBack = {
+                    currentScreen = "dashboard"
+                }
+            )
+        }
+
+        "intervention_settings" -> {
+            InterventionSettingsScreen(
+                context = context,
+                onBack = { currentScreen = "dashboard" }
+            )
+        }
+    }
+}
+
+/* =========================================================
+   INTERVENTION SETTINGS
+   ========================================================= */
+
+@Composable
+private fun InterventionMetric(label: String, value: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = value.toString(),
+            style = MaterialTheme.typography.titleLarge,
+            color = Color(0xFF16181D)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF747985)
+        )
+    }
+}
+
+@Composable
+fun InterventionSettingsScreen(
+    context: Context,
+    onBack: () -> Unit
+) {
+    var settings by remember {
+        mutableStateOf(InterventionPreferences.read(context))
+    }
+
+    fun update(next: InterventionSettings) {
+        settings = next.copy(
+            firstReminderMinutes = next.firstReminderMinutes.coerceIn(1, 120),
+            repeatReminderMinutes = next.repeatReminderMinutes.coerceIn(1, 120)
+        )
+        InterventionPreferences.write(context, settings)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .background(Color(0xFFF7F8FA))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 22.dp, vertical = 20.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = onBack) { Text("←") }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "Intervention settings",
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                    Text(
+                        text = "Choose when and how AppSense nudges you.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF747985)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    SettingsSwitchRow(
+                        title = "Interventions enabled",
+                        subtitle = "Allow reminders while using tracked apps.",
+                        checked = settings.interventionEnabled,
+                        onCheckedChange = { update(settings.copy(interventionEnabled = it)) }
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    SettingsSwitchRow(
+                        title = "Breathing exercise",
+                        subtitle = "Allow 10-second breathing resets.",
+                        checked = settings.breathingEnabled,
+                        onCheckedChange = { update(settings.copy(breathingEnabled = it)) }
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    SettingsSwitchRow(
+                        title = "Tic-Tac-Toe game",
+                        subtitle = "Allow a short game break.",
+                        checked = settings.gameEnabled,
+                        onCheckedChange = { update(settings.copy(gameEnabled = it)) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Reminder timing", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(14.dp))
+                    ReminderMinutesStepper(
+                        title = "First reminder",
+                        subtitle = "Time in a tracked-app session before the first reminder.",
+                        value = settings.firstReminderMinutes,
+                        onValueChange = { update(settings.copy(firstReminderMinutes = it)) }
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    ReminderMinutesStepper(
+                        title = "Repeat reminder",
+                        subtitle = "Wait this many minutes between later reminders.",
+                        value = settings.repeatReminderMinutes,
+                        onValueChange = { update(settings.copy(repeatReminderMinutes = it)) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onBack
+            ) { Text("Done") }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF747985))
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun ReminderMinutesStepper(
+    title: String,
+    subtitle: String,
+    value: Int,
+    onValueChange: (Int) -> Unit
+) {
+    Column {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF747985))
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            OutlinedButton(onClick = { if (value > 1) onValueChange(value - 1) }, enabled = value > 1) {
+                Text("−")
+            }
+            Text("$value min", style = MaterialTheme.typography.titleMedium)
+            OutlinedButton(onClick = { if (value < 120) onValueChange(value + 1) }, enabled = value < 120) {
+                Text("+")
             }
         }
     }
@@ -1759,6 +1664,8 @@ private fun AppSenseSplashScreen() {
 fun PermissionSetupScreen(
     usageAccessGranted: Boolean,
     overlayAccessGranted: Boolean,
+    notificationPermissionGranted: Boolean,
+    onRequestNotificationPermission: () -> Unit,
     onGrantUsageAccess: () -> Unit,
     onGrantOverlayAccess: () -> Unit
 ) {
@@ -1814,6 +1721,18 @@ fun PermissionSetupScreen(
         )
 
         Spacer(
+            modifier = Modifier.height(16.dp)
+        )
+
+        PermissionCard(
+            title = "Foreground notification (optional)",
+            description = "Android uses this notification to show that AppSense monitoring is running. You can continue without it, but Android may limit notification visibility.",
+            granted = notificationPermissionGranted,
+            buttonText = if (notificationPermissionGranted) "Notification allowed" else "Allow notification",
+            onClick = onRequestNotificationPermission
+        )
+
+        Spacer(
             modifier = Modifier.height(28.dp)
         )
 
@@ -1822,11 +1741,11 @@ fun PermissionSetupScreen(
             enabled = allGranted,
             onClick = {
                 // AppSenseApp automatically continues when both
-                // required permissions are detected.
+                // permissions are detected.
             }
         ) {
             Text(
-                if (allGranted) "Continue" else "Complete all accesses"
+                if (allGranted) "Continue" else "Complete required setup"
             )
         }
     }
@@ -1915,35 +1834,57 @@ private fun PermissionCard(
 fun DashboardScreen(
     context: Context,
     savedName: String,
-    initialTotalUsage: Long,
-    onTotalUsageChanged: (Long) -> Unit,
     onAddApp: () -> Unit,
     onStats: () -> Unit,
     onNameChanged: (String) -> Unit,
-    onGoals: () -> Unit
+    onGoals: () -> Unit,
+    onInterventionSettings: () -> Unit
 ) {
 
     val selectedApps = remember {
         loadSelectedApps(context)
     }
 
-    val today = remember {
-        Calendar.getInstance()
+    // Keep the dashboard date fresh when the Activity returns to the foreground,
+    // especially when the app remains alive across midnight.
+    var today by remember {
+        mutableStateOf(Calendar.getInstance())
     }
 
     var dashboardRefreshTick by remember {
         mutableIntStateOf(0)
     }
 
+    val interventionDailyLog = remember(dashboardRefreshTick) {
+        InterventionDailyLogStore.today(context)
+    }
+
+    val lifecycleOwner =
+        androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                today = Calendar.getInstance()
+                dashboardRefreshTick++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L)
+            today = Calendar.getInstance()
             dashboardRefreshTick++
         }
     }
 
     val totalUsage by produceState(
-        initialValue = initialTotalUsage,
+        initialValue = 0L,
         key1 = selectedApps,
         key2 = dashboardRefreshTick,
         key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
@@ -1957,11 +1898,6 @@ fun DashboardScreen(
                 )
             }
         }
-    }
-
-    // Publish each calculated value to the parent so it survives navigation.
-    LaunchedEffect(totalUsage) {
-        onTotalUsageChanged(totalUsage)
     }
 
     val dashboardHourlyData by produceState(
@@ -1979,11 +1915,11 @@ fun DashboardScreen(
         }
     }
 
-    val dateText = remember {
+    val dateText = remember(today) {
         SimpleDateFormat(
             "EEEE, d MMMM",
             Locale.getDefault()
-        ).format(Date())
+        ).format(today.time)
     }
 
     var showMenu by remember {
@@ -2085,6 +2021,19 @@ fun DashboardScreen(
                                 onClick = {
                                     showMenu = false
                                     onGoals()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Intervention settings",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onInterventionSettings()
                                 }
                             )
                         }
@@ -2192,6 +2141,33 @@ fun DashboardScreen(
                                 color = Color(0xFFE5E7EB)
                             )
                         }
+                    }
+                }
+            }
+
+            // -------------------------------------------------
+            // TODAY'S INTERVENTION LOG
+            // -------------------------------------------------
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = "TODAY'S INTERVENTIONS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF858993)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        InterventionMetric("Shown", interventionDailyLog.shown)
+                        InterventionMetric("Completed", interventionDailyLog.completed)
+                        InterventionMetric("Dismissed", interventionDailyLog.dismissed)
                     }
                 }
             }
@@ -2332,8 +2308,7 @@ fun DashboardScreen(
                     ) {
                         hourlyTotals.forEachIndexed { hour, totalMillis ->
                             Column(
-                                // Wider columns keep labels such as "12 AM" readable.
-                                modifier = Modifier.width(40.dp),
+                                modifier = Modifier.width(32.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
@@ -2976,12 +2951,19 @@ fun AddedAppStatsScreen(
                                 )
                                 .toString()
 
-                        val usage =
-                            getAppUsageForDate(
-                                context,
-                                packageName,
-                                today
-                            )
+                        val usage by produceState(
+                            initialValue = 0L,
+                            packageName,
+                            today.timeInMillis
+                        ) {
+                            value = withContext(Dispatchers.IO) {
+                                getAppUsageForDate(
+                                    context,
+                                    packageName,
+                                    today
+                                )
+                            }
+                        }
 
                         AppUsageCard(
                             name =
@@ -3245,8 +3227,14 @@ fun DailyDetail(
     date: Calendar
 ) {
 
-    val total = remember(packageName, date.timeInMillis) {
-        getAppUsageForDate(context, packageName, date)
+    val total by produceState(
+        initialValue = 0L,
+        packageName,
+        date.timeInMillis
+    ) {
+        value = withContext(Dispatchers.IO) {
+            getAppUsageForDate(context, packageName, date)
+        }
     }
 
     Column(
@@ -3258,15 +3246,41 @@ fun DailyDetail(
             )
             .padding(24.dp)
     ) {
+        val isToday = run {
+            val today = Calendar.getInstance()
+            today.get(Calendar.YEAR) == date.get(Calendar.YEAR) &&
+                    today.get(Calendar.DAY_OF_YEAR) == date.get(Calendar.DAY_OF_YEAR)
+        }
+
+        val dateLabel = SimpleDateFormat(
+            "d MMM yyyy",
+            Locale.getDefault()
+        ).format(date.time)
+
+        val usageTitle =
+            if (isToday) {
+                "Today's usage"
+            } else {
+                "Usage on $dateLabel"
+            }
+
+        val displayAppName =
+            try {
+                val info = context.packageManager.getApplicationInfo(packageName, 0)
+                context.packageManager.getApplicationLabel(info).toString()
+            } catch (_: Exception) {
+                packageName
+            }
+
         Text(
-            text = "Today's usage",
+            text = usageTitle,
             style = MaterialTheme.typography.titleMedium
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "Total time spent in $packageName",
+            text = "Total time spent in $displayAppName",
             style = MaterialTheme.typography.bodySmall
         )
 
@@ -3297,11 +3311,26 @@ fun HourlyDetail(
     date: Calendar
 ) {
 
-    val sessions = remember(packageName, date.timeInMillis) {
-        getHourlySessions(context, packageName, date)
+    val sessions by produceState<List<UsageSession>?>(
+        initialValue = null,
+        packageName,
+        date.timeInMillis
+    ) {
+        value = withContext(Dispatchers.IO) {
+            getHourlySessions(context, packageName, date)
+        }
     }
 
-    if (sessions.isEmpty()) {
+    if (sessions == null) {
+        Text(
+            text = "Loading usage sessions…",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(24.dp)
+        )
+        return
+    }
+
+    if (sessions!!.isEmpty()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3335,7 +3364,7 @@ fun HourlyDetail(
             )
         }
 
-        items(sessions) { session ->
+        items(sessions!!) { session ->
             UsageSessionCard(session)
         }
     }
