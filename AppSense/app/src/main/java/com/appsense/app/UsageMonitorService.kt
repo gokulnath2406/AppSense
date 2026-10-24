@@ -60,6 +60,10 @@ class UsageMonitorService : Service() {
     private var currentPackage: String? = null
     private val sessionTracker = SessionTracker()
 
+    // Monitoring-thread state for the visible timer, which resets per tracked app.
+    private var floatingTimerPackage: String? = null
+    private var floatingTimerStartedAtElapsedRealtime: Long = 0L
+
     private var lastForegroundPackage: String? = null
 
     // Cache today's full event-history calculation. The visible session timer still
@@ -216,6 +220,12 @@ class UsageMonitorService : Service() {
         val trackedAppInForeground =
             foregroundPackage != null && selectedApps.contains(foregroundPackage)
 
+        // Reset the visible timer when no tracked app is foreground (including screen-off).
+        if (!trackedAppInForeground) {
+            floatingTimerPackage = null
+            floatingTimerStartedAtElapsedRealtime = 0L
+        }
+
         val elapsed = sessionTracker.onTick(
             nowMonotonicMs = SystemClock.elapsedRealtime(),
             trackedAppInForeground = trackedAppInForeground,
@@ -245,6 +255,19 @@ class UsageMonitorService : Service() {
         }
 
         val packageName = foregroundPackage ?: return
+        val nowElapsedRealtime = SystemClock.elapsedRealtime()
+
+        // The floating "Current" timer is per app; the shared SessionTracker remains
+        // continuous for reminders across tracked-app switches.
+        if (
+            floatingTimerPackage != packageName ||
+            floatingTimerStartedAtElapsedRealtime == 0L
+        ) {
+            floatingTimerPackage = packageName
+            floatingTimerStartedAtElapsedRealtime = nowElapsedRealtime
+        }
+        val appElapsed = nowElapsedRealtime - floatingTimerStartedAtElapsedRealtime
+
         val nowWallClock = System.currentTimeMillis()
         val todayTotal = getTodayUsage(packageName, nowWallClock)
 
@@ -280,7 +303,7 @@ class UsageMonitorService : Service() {
                 }
             }
 
-            showFloatingTimer(elapsed, todayTotal)
+            showFloatingTimer(appElapsed, todayTotal)
 
             if (remindersInSession == 0) {
                 // Keep the configurable first threshold in effect until the first reminder is shown.
@@ -360,17 +383,17 @@ class UsageMonitorService : Service() {
                 USAGE_STATS_SERVICE
             ) as UsageStatsManager
 
-        val endTime =
-            System.currentTimeMillis()
+        val endTime = System.currentTimeMillis()
 
-        // A restarted service may find the user already inside a tracked app.
-        // Its last RESUMED/foreground event can be much older than 10 seconds,
-        // so do one wider scan after startup, then return to lightweight polling.
+        // Re-scan enough recent history on every poll to recover app-switch
+        // events that Android may deliver late. This prevents retaining the
+        // previous app as foreground and carrying its visible timer forward.
         val lookbackMillis = if (isForegroundStateInitialized) {
-            10_000L
+            60_000L
         } else {
-            2L * 60L * 60L * 1000L // 2 hours on the first check after service start
+            2L * 60L * 60L * 1000L
         }
+
         val startTime = (endTime - lookbackMillis).coerceAtLeast(0L)
 
         val usageEvents =
@@ -378,54 +401,79 @@ class UsageMonitorService : Service() {
                 startTime,
                 endTime
             )
+
         isForegroundStateInitialized = true
 
-        val event =
-            UsageEvents.Event()
+        val event = UsageEvents.Event()
 
-        var latestPackage =
-            lastForegroundPackage
-
+        var latestPackage = lastForegroundPackage
         var latestTime = 0L
 
         while (usageEvents.hasNextEvent()) {
 
             usageEvents.getNextEvent(event)
 
+            val eventType = event.eventType
+            val eventPackage = event.packageName
+            val eventTime = event.timeStamp
+
             val isForegroundEvent =
-                event.eventType ==
-                        UsageEvents.Event.MOVE_TO_FOREGROUND ||
+                eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
                         (
-                                Build.VERSION.SDK_INT >=
-                                        Build.VERSION_CODES.Q &&
-                                        event.eventType ==
-                                        UsageEvents.Event.ACTIVITY_RESUMED
+                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                        eventType == UsageEvents.Event.ACTIVITY_RESUMED
                                 )
 
             val isBackgroundEvent =
-                event.eventType ==
-                        UsageEvents.Event.MOVE_TO_BACKGROUND ||
+                eventType == UsageEvents.Event.MOVE_TO_BACKGROUND ||
                         (
-                                Build.VERSION.SDK_INT >=
-                                        Build.VERSION_CODES.Q &&
-                                        event.eventType ==
-                                        UsageEvents.Event.ACTIVITY_PAUSED
+                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                        (
+                                                eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
+                                                        eventType == UsageEvents.Event.ACTIVITY_STOPPED
+                                                )
                                 )
 
-            if (
-                isForegroundEvent &&
-                event.timeStamp >= latestTime
-            ) {
-                latestTime = event.timeStamp
-                latestPackage = event.packageName
-            }
+            val isSystemStopEvent =
+                (
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                                (
+                                        eventType == UsageEvents.Event.SCREEN_NON_INTERACTIVE ||
+                                                eventType == UsageEvents.Event.KEYGUARD_SHOWN
+                                        )
+                        ) ||
+                        (
+                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                        eventType == UsageEvents.Event.DEVICE_SHUTDOWN
+                                )
 
-            if (
-                isBackgroundEvent &&
-                event.timeStamp >= latestTime
-            ) {
-                latestTime = event.timeStamp
-                latestPackage = null
+            when {
+
+                isSystemStopEvent -> {
+                    if (eventTime >= latestTime) {
+                        latestTime = eventTime
+                        latestPackage = null
+                    }
+                }
+
+                isForegroundEvent -> {
+                    if (eventTime >= latestTime) {
+                        latestTime = eventTime
+                        latestPackage = eventPackage
+                    }
+                }
+
+                isBackgroundEvent -> {
+                    // An old app's background event must not clear
+                    // a different app that has already resumed.
+                    if (
+                        eventPackage == latestPackage &&
+                        eventTime >= latestTime
+                    ) {
+                        latestTime = eventTime
+                        latestPackage = null
+                    }
+                }
             }
         }
 
@@ -433,7 +481,6 @@ class UsageMonitorService : Service() {
 
         return latestPackage
     }
-
     private fun createFloatingTimer() {
 
         if (overlayView != null) return
@@ -1606,4 +1653,3 @@ class UsageMonitorService : Service() {
         return null
     }
 }
-
