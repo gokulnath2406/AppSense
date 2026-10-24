@@ -1,4 +1,3 @@
-
 package com.appsense.app
 
 import android.app.usage.UsageEvents
@@ -29,12 +28,16 @@ object AppSenseUsageCalculator {
      *
      * System events are processed before filtering by package name because those events
      * may belong to another package.
+     *
+     * @param mergeGapMs Optional gap tolerance for merging intervals. The default of 0
+     * preserves the existing behavior by merging only overlapping or touching intervals.
      */
     fun getIntervals(
         context: Context,
         packageName: String,
         dayStart: Long,
-        dayEnd: Long
+        dayEnd: Long,
+        mergeGapMs: Long = 0L
     ): List<AppUsageInterval> {
 
         if (dayEnd <= dayStart) return emptyList()
@@ -172,8 +175,8 @@ object AppSenseUsageCalculator {
             closeActiveActivities(dayEnd)
         }
 
-        // Sort and merge overlapping or touching intervals.
-        // This preserves non-overlapping results for totals and chart buckets.
+        // Sort and merge overlapping/touching intervals, plus any optional gap
+        // within mergeGapMs. The default 0 keeps existing callers unchanged.
         if (intervals.size < 2) return intervals
 
         val sorted = intervals.sortedBy { it.startTime }
@@ -181,10 +184,11 @@ object AppSenseUsageCalculator {
 
         var currentStart = sorted.first().startTime
         var currentEnd = sorted.first().endTime
+        val allowedGap = mergeGapMs.coerceAtLeast(0L)
 
         for (next in sorted.drop(1)) {
 
-            if (next.startTime <= currentEnd) {
+            if (next.startTime <= currentEnd || next.startTime - currentEnd <= allowedGap) {
 
                 currentEnd = maxOf(currentEnd, next.endTime)
 

@@ -359,7 +359,8 @@ private fun getUsageSessions(
         context = context,
         packageName = packageName,
         dayStart = dayStart,
-        dayEnd = dayEnd
+        dayEnd = dayEnd,
+        mergeGapMs = 10_000L
     ).map { interval ->
         UsageSession(
             startTime = interval.startTime,
