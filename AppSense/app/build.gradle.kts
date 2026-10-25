@@ -21,15 +21,18 @@ android {
 
     buildTypes {
         release {
+            // AGP 9.3+: enables R8 code optimization and resource shrinking.
             optimization {
-                enable = false
+                enable = true
             }
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+
     buildFeatures {
         compose = true
     }
@@ -44,9 +47,10 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 
     // Unit testing
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit)
 
     // Instrumentation testing
     androidTestImplementation(platform(libs.androidx.compose.bom))

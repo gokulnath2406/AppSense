@@ -1,8 +1,6 @@
 package com.appsense.app
 
 import android.app.AppOpsManager
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -265,40 +263,6 @@ private fun saveSelectedApps(
 }
 
 /* =========================================================
-   EVENT TYPES
-   ========================================================= */
-
-private fun foregroundEvent(): Int {
-
-    return if (
-        Build.VERSION.SDK_INT >=
-        Build.VERSION_CODES.Q
-    ) {
-
-        UsageEvents.Event.ACTIVITY_RESUMED
-
-    } else {
-
-        UsageEvents.Event.MOVE_TO_FOREGROUND
-    }
-}
-
-private fun backgroundEvent(): Int {
-
-    return if (
-        Build.VERSION.SDK_INT >=
-        Build.VERSION_CODES.Q
-    ) {
-
-        UsageEvents.Event.ACTIVITY_PAUSED
-
-    } else {
-
-        UsageEvents.Event.MOVE_TO_BACKGROUND
-    }
-}
-
-/* =========================================================
    DAY RANGE
    ========================================================= */
 
@@ -497,31 +461,6 @@ private fun getDashboardHourlyUsage(
             hourlyUsage = buckets
         )
     }
-}
-
-private fun getDashboardAppUsage(
-    context: Context,
-    packageNames: Set<String>,
-    date: Calendar
-): List<AppUsage> {
-    if (packageNames.isEmpty()) return emptyList()
-
-    val installedApps = getInstalledApps(context)
-    val labelsByPackage = installedApps.associateBy { it.packageName }
-
-    return packageNames
-        .map { packageName ->
-            AppUsage(
-                name = labelsByPackage[packageName]?.name ?: packageName,
-                packageName = packageName,
-                usageMillis = getAppUsageForDate(
-                    context,
-                    packageName,
-                    date
-                )
-            )
-        }
-        .sortedByDescending { it.usageMillis }
 }
 
 /* =========================================================
