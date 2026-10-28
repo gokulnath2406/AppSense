@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -81,6 +82,7 @@ class UsageMonitorService : Service() {
     @Volatile
     private var isExpanded = false
     private var outsideTouchView: View? = null
+    private var interventionOverlay: InterventionOverlay? = null
 
     // Intervention reminders are based on the current continuous tracked-app session.
     // The first prompt appears at 15 minutes; later prompts are spaced 10 minutes apart.
@@ -295,6 +297,7 @@ class UsageMonitorService : Service() {
             if (currentPackage != packageName) {
                 currentPackage = packageName
                 activeReminderType = null
+                interventionOverlay?.dismiss()
                 cancelBreathingExercise()
 
                 // Collapse any reminder expanded for the previous tracked app.
@@ -323,12 +326,16 @@ class UsageMonitorService : Service() {
                 Settings.canDrawOverlays(this) &&
                 currentPackage == packageName
             ) {
-                activeReminderType = when {
+                val reminderType = when {
                     interventionSettings.breathingEnabled && interventionSettings.gameEnabled ->
                         if (kotlin.random.Random.nextBoolean()) "breathing" else "game"
                     interventionSettings.breathingEnabled -> "breathing"
                     else -> "game"
                 }
+                if (isExpanded) {
+                    collapseFloatingTimer()
+                }
+                activeReminderType = reminderType
                 reminderElapsedMs = elapsed
                 remindersInSession++
                 interventionOutcomeLogged = false
@@ -340,12 +347,42 @@ class UsageMonitorService : Service() {
                 // Schedule repeats from the actual reminder time; if interventions are disabled,
                 // the pending threshold remains eligible when the user re-enables them.
                 nextReminderElapsedMs = elapsed + repeatReminderMs
-                updateOutsideTouchLayerTouchability()
-
-                if (!isExpanded) {
-                    expandFloatingTimer()
+                val appLabel = try {
+                    packageManager.getApplicationLabel(
+                        packageManager.getApplicationInfo(packageName, 0)
+                    ).toString()
+                } catch (_: Exception) {
+                    packageName
                 }
-                renderReminderPanel()
+                val overlay = interventionOverlay ?: InterventionOverlay(
+                    this,
+                    windowManager,
+                    mainHandler
+                ).also { interventionOverlay = it }
+                overlay.show(
+                    InterventionOverlay.Model(
+                        appLabel = appLabel,
+                        minutes = (reminderElapsedMs / 60_000L).toInt(),
+                        type = reminderType,
+                        continueAtElapsedRealtimeMs = reminderContinueAtElapsedRealtimeMs
+                    ),
+                    object : InterventionOverlay.Callbacks {
+                        override fun onClose() {
+                            closeCurrentAppToHome()
+                        }
+
+                        override fun onContinue() {
+                            logInterventionDismissedOnce()
+                            activeReminderType = null
+                            cancelBreathingExercise()
+                            cancelReminderCountdown()
+                            gameCells = MutableList(9) { "" }
+                            gameFinished = false
+                            interventionOverlay?.dismiss()
+                        }
+                    }
+                )
+                startReminderCountdown()
                 InterventionDailyLogStore.recordShown(this)
             }
         }
@@ -567,8 +604,7 @@ class UsageMonitorService : Service() {
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 height,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        if (activeReminderType != null) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             ).apply {
 
@@ -1043,8 +1079,9 @@ class UsageMonitorService : Service() {
         cancelReminderCountdown()
         val runnable = object : Runnable {
             override fun run() {
-                if (activeReminderType == null || continueButton == null) return
+                if (activeReminderType == null || interventionOverlay?.isShowing != true) return
                 updateReminderCountdownButton()
+                interventionOverlay?.refreshCountdown()
                 if (SystemClock.elapsedRealtime() < reminderContinueAtElapsedRealtimeMs) {
                     mainHandler.postDelayed(this, 250L)
                 }
@@ -1087,12 +1124,10 @@ class UsageMonitorService : Service() {
         }
         val layer = outsideTouchView ?: return
         val params = layer.layoutParams as? WindowManager.LayoutParams ?: return
-        val shouldPassTouchesThrough = activeReminderType != null
-        val desiredFlags = if (shouldPassTouchesThrough) {
-            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        } else {
-            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        }
+        val desiredFlags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        layer.setBackgroundColor(
+            if (activeReminderType != null) Color.argb(150, 0, 0, 0) else Color.TRANSPARENT
+        )
         if (params.flags != desiredFlags) {
             params.flags = desiredFlags
             try {
@@ -1180,11 +1215,15 @@ class UsageMonitorService : Service() {
             return
         }
 
-        if (!isExpanded && activeReminderType == null) return
+        if (!isExpanded && activeReminderType == null) {
+            interventionOverlay?.dismiss()
+            return
+        }
 
         cancelBreathingExercise()
         cancelReminderCountdown()
         activeReminderType = null
+        interventionOverlay?.dismiss()
         updateOutsideTouchLayerTouchability()
         if (isExpanded) {
             collapseFloatingTimer()
@@ -1280,6 +1319,8 @@ class UsageMonitorService : Service() {
     }
 
     private fun collapseFloatingTimer() {
+
+        interventionOverlay?.dismiss()
 
         val view =
             overlayView ?: return
@@ -1377,13 +1418,16 @@ class UsageMonitorService : Service() {
         val layer =
             View(this).apply {
 
-                setBackgroundColor(Color.TRANSPARENT)
+                setBackgroundColor(
+                    if (activeReminderType != null) Color.argb(150, 0, 0, 0) else Color.TRANSPARENT
+                )
 
-                setOnTouchListener { _, event ->
+                setOnTouchListener { view, event ->
 
                     if (activeReminderType != null) {
-                        // During an intervention this layer is NOT_TOUCHABLE, so normal app
-                        // gestures pass through. Keep this guard for a state-change race.
+                        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        }
                         true
                     } else if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         collapseFloatingTimer()
@@ -1401,8 +1445,7 @@ class UsageMonitorService : Service() {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        (if (activeReminderType != null) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity =
@@ -1417,6 +1460,7 @@ class UsageMonitorService : Service() {
             )
 
             outsideTouchView = layer
+            updateOutsideTouchLayerTouchability()
 
             // Put the expanded card above the transparent
             // outside-touch layer.
@@ -1616,6 +1660,7 @@ class UsageMonitorService : Service() {
     override fun onDestroy() {
 
         resetInterventionUi()
+        interventionOverlay?.dismiss()
         isMonitoring = false
         cancelBreathingExercise()
 
