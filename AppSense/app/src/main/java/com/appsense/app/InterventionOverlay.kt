@@ -35,6 +35,19 @@ object InterventionTheme {
     const val PRIMARY_TEXT_SIZE_SP = 16f
     const val SECONDARY_BUTTON_MIN_HEIGHT_DP = 48
     const val SECONDARY_TEXT_SIZE_SP = 15f
+
+    const val BREATHING_ACCENT_COLOR = 0xFF4ADE80.toInt()
+    const val BREATHING_CIRCLE_ALPHA = 64
+    const val BREATHING_RING_WIDTH_DP = 3
+    const val BREATHING_MIN_SCALE = 0.55f
+    const val BREATHING_MAX_SCALE = 1.0f
+    const val BREATHING_PHASE_TEXT_COLOR = Color.WHITE
+    const val BREATHING_COUNTDOWN_TEXT_COLOR = 0xB3FFFFFF.toInt()
+    const val BREATHING_PHASE_TEXT_SIZE_SP = 22f
+    const val BREATHING_COUNTDOWN_TEXT_SIZE_SP = 15f
+    const val BREATHING_CONTENT_HEIGHT_DP = 260
+    const val BREATHING_SKIP_TEXT_SIZE_SP = 14f
+    const val BREATHING_FINISHED_TEXT_SIZE_SP = 18f
 }
 
 class InterventionOverlay(
@@ -265,12 +278,22 @@ class InterventionOverlay(
         }
         val frame = contentFrame ?: return
         frame.removeAllViews()
+        val frameParams = frame.layoutParams as? LinearLayout.LayoutParams
+        if (frameParams != null) {
+            frameParams.height = if (view != null) {
+                dp(InterventionTheme.BREATHING_CONTENT_HEIGHT_DP)
+            } else {
+                0
+            }
+            frameParams.weight = if (view != null) 0f else 1f
+            frame.layoutParams = frameParams
+        }
         if (view != null) {
             frame.addView(
                 view,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
                     Gravity.TOP
                 )
             )

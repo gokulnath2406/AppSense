@@ -4,6 +4,9 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Intent
@@ -95,6 +98,9 @@ class UsageMonitorService : Service() {
     private var reminderCountdownRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var breathingRunnable: Runnable? = null
+    private var interventionAudioManager: AudioManager? = null
+    private var interventionAudioFocusRequest: AudioFocusRequest? = null
+    private var interventionAudioFocusHeld = false
     private var breathingStep = 0
     private var gameCells = MutableList(9) { "" }
     private var gameFinished = false
@@ -297,6 +303,7 @@ class UsageMonitorService : Service() {
             if (currentPackage != packageName) {
                 currentPackage = packageName
                 activeReminderType = null
+                abandonInterventionAudioFocus()
                 interventionOverlay?.dismiss()
                 cancelBreathingExercise()
 
@@ -336,6 +343,9 @@ class UsageMonitorService : Service() {
                     collapseFloatingTimer()
                 }
                 activeReminderType = reminderType
+                if (reminderType == "breathing") {
+                    requestInterventionAudioFocus()
+                }
                 reminderElapsedMs = elapsed
                 remindersInSession++
                 interventionOutcomeLogged = false
@@ -374,6 +384,7 @@ class UsageMonitorService : Service() {
                         override fun onContinue() {
                             logInterventionDismissedOnce()
                             activeReminderType = null
+                            abandonInterventionAudioFocus()
                             cancelBreathingExercise()
                             cancelReminderCountdown()
                             gameCells = MutableList(9) { "" }
@@ -382,6 +393,21 @@ class UsageMonitorService : Service() {
                         }
                     }
                 )
+                if (!overlay.isShowing) {
+                    abandonInterventionAudioFocus()
+                }
+                if (reminderType == "breathing") {
+                    overlay.setContent(
+                        BreathingView(this) { _ ->
+                            if (activeReminderType == "breathing" && interventionOverlay?.isShowing == true) {
+                                logInterventionCompletedOnce()
+                            }
+                            abandonInterventionAudioFocus()
+                        }
+                    )
+                } else {
+                    overlay.setContent(null)
+                }
                 startReminderCountdown()
                 InterventionDailyLogStore.recordShown(this)
             }
@@ -1019,6 +1045,7 @@ class UsageMonitorService : Service() {
                 if (SystemClock.elapsedRealtime() >= reminderContinueAtElapsedRealtimeMs) {
                     logInterventionDismissedOnce()
                     activeReminderType = null
+                    abandonInterventionAudioFocus()
                     cancelBreathingExercise()
                     cancelReminderCountdown()
                     collapseFloatingTimer()
@@ -1102,6 +1129,7 @@ class UsageMonitorService : Service() {
             return
         }
         logInterventionDismissedOnce()
+        abandonInterventionAudioFocus()
         try {
             val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                 addCategory(Intent.CATEGORY_HOME)
@@ -1175,6 +1203,51 @@ class UsageMonitorService : Service() {
         }
     }
 
+    private fun requestInterventionAudioFocus() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { requestInterventionAudioFocus() }
+            return
+        }
+        if (interventionAudioFocusHeld) return
+
+        val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAcceptsDelayedFocusGain(false)
+            .setOnAudioFocusChangeListener { }
+            .build()
+
+        interventionAudioManager = audioManager
+        interventionAudioFocusRequest = request
+        interventionAudioFocusHeld =
+            audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonInterventionAudioFocus() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { abandonInterventionAudioFocus() }
+            return
+        }
+
+        val audioManager = interventionAudioManager
+        val request = interventionAudioFocusRequest
+        if (audioManager != null && request != null && interventionAudioFocusHeld) {
+            try {
+                audioManager.abandonAudioFocusRequest(request)
+            } catch (_: Exception) {
+                // Audio focus cleanup must not interrupt intervention cleanup.
+            }
+        }
+        interventionAudioFocusHeld = false
+        interventionAudioFocusRequest = null
+        interventionAudioManager = null
+    }
+
     private fun startBreathingExercise() {
         cancelBreathingExercise()
         breathingStep = 0
@@ -1222,6 +1295,7 @@ class UsageMonitorService : Service() {
 
         cancelBreathingExercise()
         cancelReminderCountdown()
+        abandonInterventionAudioFocus()
         activeReminderType = null
         interventionOverlay?.dismiss()
         updateOutsideTouchLayerTouchability()
@@ -1335,6 +1409,7 @@ class UsageMonitorService : Service() {
         gameFinished = false
         cancelBreathingExercise()
         cancelReminderCountdown()
+        abandonInterventionAudioFocus()
         activeReminderType = null
         continueButton = null
         closeAppButton = null
@@ -1660,6 +1735,7 @@ class UsageMonitorService : Service() {
     override fun onDestroy() {
 
         resetInterventionUi()
+        abandonInterventionAudioFocus()
         interventionOverlay?.dismiss()
         isMonitoring = false
         cancelBreathingExercise()
