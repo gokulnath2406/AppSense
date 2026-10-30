@@ -520,8 +520,7 @@ class UsageMonitorService : Service() {
                             gameView,
                             LinearLayout.LayoutParams(
                                 LinearLayout.LayoutParams.MATCH_PARENT,
-                                0,
-                                1f
+                                (220 * resources.displayMetrics.density).toInt()
                             )
                         )
                     }

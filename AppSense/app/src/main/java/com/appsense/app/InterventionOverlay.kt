@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -22,6 +23,7 @@ import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 
 object InterventionTheme {
@@ -86,6 +88,7 @@ class InterventionOverlay(
     private var rootView: FrameLayout? = null
     private var cardView: MaxHeightLinearLayout? = null
     private var contentFrame: FrameLayout? = null
+    private var contentScrollView: ScrollView? = null
     private var captionView: TextView? = null
     private var closeButton: TextView? = null
     private var continueButton: TextView? = null
@@ -145,6 +148,10 @@ class InterventionOverlay(
         val root = FrameLayout(context).apply {
             background = ColorDrawable(Color.TRANSPARENT)
             isClickable = true
+            contentDescription = "Take a break"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                accessibilityPaneTitle = "Take a break"
+            }
             setOnTouchListener { _, _ -> true }
         }
 
@@ -182,9 +189,21 @@ class InterventionOverlay(
             )
         )
 
+        val contentScroll = ScrollView(context).apply {
+            isFillViewport = false
+            clipToPadding = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
         val content = FrameLayout(context)
-        card.addView(
+        contentScroll.addView(
             content,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        card.addView(
+            contentScroll,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -196,6 +215,7 @@ class InterventionOverlay(
             gravity = Gravity.CENTER
             textSize = InterventionTheme.PRIMARY_TEXT_SIZE_SP
             setTextColor(InterventionTheme.PRIMARY_TEXT_COLOR)
+            contentDescription = "Close"
             typeface = android.graphics.Typeface.create(
                 android.graphics.Typeface.DEFAULT,
                 android.graphics.Typeface.BOLD
@@ -223,6 +243,7 @@ class InterventionOverlay(
             gravity = Gravity.CENTER
             textSize = InterventionTheme.SECONDARY_TEXT_SIZE_SP
             setTextColor(InterventionTheme.SECONDARY_TEXT_COLOR)
+            contentDescription = "Continue"
             minHeight = dp(InterventionTheme.SECONDARY_BUTTON_MIN_HEIGHT_DP)
             isClickable = true
             isFocusable = true
@@ -266,6 +287,7 @@ class InterventionOverlay(
         rootView = root
         cardView = card
         contentFrame = content
+        contentScrollView = contentScroll
         captionView = caption
         closeButton = close
         continueButton = continueAction
@@ -377,16 +399,16 @@ class InterventionOverlay(
         }
         val frame = contentFrame ?: return
         frame.removeAllViews()
-        val frameParams = frame.layoutParams as? LinearLayout.LayoutParams
+        val frameParams = frame.layoutParams as? FrameLayout.LayoutParams
         if (frameParams != null) {
             frameParams.height = if (view != null) {
                 dp(InterventionTheme.BREATHING_CONTENT_HEIGHT_DP)
             } else {
                 0
             }
-            frameParams.weight = if (view != null) 0f else 1f
             frame.layoutParams = frameParams
         }
+        contentScrollView?.scrollTo(0, 0)
         if (view != null) {
             frame.addView(
                 view,
@@ -411,6 +433,7 @@ class InterventionOverlay(
         val remainingMs = (model.continueAtElapsedRealtimeMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
         val remainingSeconds = ((remainingMs + 999L) / 1000L).toInt()
         button.text = if (remainingSeconds > 0) "Continue in ${remainingSeconds}s" else "Continue"
+        button.contentDescription = button.text.toString()
         button.isEnabled = remainingMs == 0L
         button.alpha = when {
             dismissInProgress || SystemClock.elapsedRealtime() < inputGuardUntilElapsedRealtimeMs -> 0.6f
@@ -550,6 +573,7 @@ class InterventionOverlay(
         rootView = null
         cardView = null
         contentFrame = null
+        contentScrollView = null
         captionView = null
         closeButton = null
         continueButton = null
@@ -562,6 +586,8 @@ class InterventionOverlay(
     private fun updateCard(model: Model) {
         captionView?.text = "${model.minutes} min on ${model.appLabel}"
         closeButton?.text = "Close ${model.appLabel}"
+        closeButton?.contentDescription = "Close ${model.appLabel}"
+        continueButton?.contentDescription = continueButton?.text?.toString() ?: "Continue"
         updateCardBounds(rootView?.width ?: 0, rootView?.height ?: 0)
     }
 

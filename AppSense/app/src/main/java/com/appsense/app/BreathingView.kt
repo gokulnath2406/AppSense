@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.view.accessibility.AccessibilityNodeInfo
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
@@ -74,13 +75,21 @@ class BreathingView(
     private var skipVisible = false
     private var inputGuardUntilElapsedRealtimeMs = 0L
     private var inputBlocked = false
+    private var lastAccessibilityAnnouncementAt = Long.MIN_VALUE
+    private var lastAccessibilityAnnouncement: String? = null
     private val inputGuardRefreshRunnable = Runnable { invalidate() }
+
+    private companion object {
+        const val ACTION_SKIP_EXERCISE = 0x00F00001
+        const val ACCESSIBILITY_ANNOUNCEMENT_INTERVAL_MS = 2_000L
+    }
 
     private val startBreathingAfterPreparation = Runnable {
         if (detached || phase == Phase.FINISHED) return@Runnable
         preparationComplete = true
         phase = Phase.INHALE
         phaseScale = InterventionTheme.BREATHING_MIN_SCALE
+        announceBreathingState("Breathe in")
         phaseStartedAt = SystemClock.elapsedRealtime()
         phaseDurationMs = 4_000L
         if (animationDisabled) {
@@ -121,7 +130,7 @@ class BreathingView(
     init {
         isClickable = true
         isFocusable = true
-        contentDescription = "Breathing exercise"
+        contentDescription = "Breathing guide"
     }
 
     override fun onAttachedToWindow() {
@@ -141,6 +150,7 @@ class BreathingView(
             preparationComplete = false
             phase = Phase.INHALE
             phaseScale = InterventionTheme.BREATHING_MIN_SCALE
+            announceBreathingState("Get ready to relax")
             postDelayed(startBreathingAfterPreparation, 3_000L)
             invalidate()
         }
@@ -223,11 +233,12 @@ class BreathingView(
         skipVisible = completedCycles >= 1
         if (skipVisible) {
             val skipY = height - 12f * density
+            // Keep the Skip hit target at least 48dp high.
             skipBounds.set(
                 centerX - 52f * density,
-                skipY - 30f * density,
+                skipY - 36f * density,
                 centerX + 52f * density,
-                skipY + 8f * density
+                skipY + 12f * density
             )
             skipPaint.alpha = if (isInputGuardActive()) 153 else 255
             canvas.drawText("Skip", centerX, skipY, skipPaint)
@@ -260,6 +271,41 @@ class BreathingView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.contentDescription = contentDescription
+        if (skipVisible) {
+            info.addAction(
+                AccessibilityNodeInfo.AccessibilityAction(
+                    ACTION_SKIP_EXERCISE,
+                    "Skip breathing exercise"
+                )
+            )
+        }
+    }
+
+    override fun performAccessibilityAction(action: Int, arguments: android.os.Bundle?): Boolean {
+        if (action == ACTION_SKIP_EXERCISE && skipVisible && !isInputGuardActive()) {
+            finishExercise(completedFully = false)
+            return true
+        }
+        return super.performAccessibilityAction(action, arguments)
+    }
+
+    private fun announceBreathingState(state: String) {
+        contentDescription = "Breathing guide. $state"
+        val now = SystemClock.elapsedRealtime()
+        if (
+            lastAccessibilityAnnouncement != state &&
+            (lastAccessibilityAnnouncementAt == Long.MIN_VALUE ||
+                    now - lastAccessibilityAnnouncementAt >= ACCESSIBILITY_ANNOUNCEMENT_INTERVAL_MS)
+        ) {
+            lastAccessibilityAnnouncement = state
+            lastAccessibilityAnnouncementAt = now
+            if (isAttachedToWindow) announceForAccessibility(state)
+        }
     }
 
     private fun startPhaseAnimator() {
@@ -300,6 +346,7 @@ class BreathingView(
                     if (cancelled || detached || phase == Phase.FINISHED) return
                     if (phase == Phase.INHALE) {
                         phase = Phase.EXHALE
+                        announceBreathingState("Breathe out")
                         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         startPhaseAnimator()
                     } else {
@@ -308,6 +355,7 @@ class BreathingView(
                             finishExercise(completedFully = true)
                         } else {
                             phase = Phase.INHALE
+                            announceBreathingState("Breathe in")
                             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             startPhaseAnimator()
                         }
@@ -336,6 +384,7 @@ class BreathingView(
         if (elapsed < phaseDurationMs) return
         if (phase == Phase.INHALE) {
             phase = Phase.EXHALE
+            announceBreathingState("Breathe out")
             phaseStartedAt = now
             phaseDurationMs = 6_000L
             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -346,6 +395,7 @@ class BreathingView(
                 return
             }
             phase = Phase.INHALE
+            announceBreathingState("Breathe in")
             phaseStartedAt = now
             phaseDurationMs = 4_000L
             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -355,6 +405,7 @@ class BreathingView(
     private fun finishExercise(completedFully: Boolean) {
         if (detached || phase == Phase.FINISHED || callbackSent || inputBlocked) return
         phase = Phase.FINISHED
+        announceBreathingState("Nice. Take your time.")
         callbackSent = true
         phaseAnimator?.removeAllUpdateListeners()
         phaseAnimator?.removeAllListeners()
