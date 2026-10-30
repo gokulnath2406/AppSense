@@ -2345,7 +2345,7 @@ fun DashboardScreen(
                     ) {
                         hourlyTotals.forEachIndexed { hour, totalMillis ->
                             Column(
-                                modifier = Modifier.width(32.dp),
+                                modifier = Modifier.width(44.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
@@ -2356,7 +2356,9 @@ fun DashboardScreen(
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color(0xFF737782),
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                 )
 
                                 Spacer(modifier = Modifier.height(5.dp))
@@ -2378,13 +2380,15 @@ fun DashboardScreen(
                                         ) {
                                             dashboardHourlyData.forEach { app ->
                                                 val millis = app.hourlyUsage[hour]
+
                                                 if (millis > 0L) {
                                                     Box(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
                                                             .height(
                                                                 (112f *
-                                                                        (millis.toFloat() / maxHourUsage.toFloat())
+                                                                        (millis.toFloat() /
+                                                                                maxHourUsage.toFloat())
                                                                             .coerceIn(0f, 1f)).dp
                                                             )
                                                             .background(app.color)
@@ -2400,7 +2404,10 @@ fun DashboardScreen(
                                 Text(
                                     text = "${if (hour % 12 == 0) 12 else hour % 12} ${if (hour < 12) "AM" else "PM"}",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF737782)
+                                    color = Color(0xFF737782),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                 )
                             }
                         }
