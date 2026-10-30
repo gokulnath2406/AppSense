@@ -438,19 +438,12 @@ class UsageMonitorService : Service() {
             InterventionDailyLogStore.recordDismissed(this)
         }
     }
-
     private fun getCurrentForegroundApp(): String? {
-
         val usageStatsManager =
-            getSystemService(
-                USAGE_STATS_SERVICE
-            ) as UsageStatsManager
+            getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
 
         val endTime = System.currentTimeMillis()
 
-        // Re-scan enough recent history on every poll to recover app-switch
-        // events that Android may deliver late. This prevents retaining the
-        // previous app as foreground and carrying its visible timer forward.
         val lookbackMillis = if (isForegroundStateInitialized) {
             60_000L
         } else {
@@ -459,25 +452,22 @@ class UsageMonitorService : Service() {
 
         val startTime = (endTime - lookbackMillis).coerceAtLeast(0L)
 
-        val usageEvents =
-            usageStatsManager.queryEvents(
-                startTime,
-                endTime
-            )
+        val usageEvents = usageStatsManager.queryEvents(
+            startTime,
+            endTime
+        )
 
         isForegroundStateInitialized = true
 
         val event = UsageEvents.Event()
-
         var latestPackage = lastForegroundPackage
         var latestTime = 0L
 
         while (usageEvents.hasNextEvent()) {
-
             usageEvents.getNextEvent(event)
 
             val eventType = event.eventType
-            val eventPackage = event.packageName
+            val eventPackage = event.packageName ?: continue
             val eventTime = event.timeStamp
 
             val isForegroundEvent =
@@ -487,15 +477,8 @@ class UsageMonitorService : Service() {
                                         eventType == UsageEvents.Event.ACTIVITY_RESUMED
                                 )
 
-            val isBackgroundEvent =
-                eventType == UsageEvents.Event.MOVE_TO_BACKGROUND ||
-                        (
-                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                                        (
-                                                eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
-                                                        eventType == UsageEvents.Event.ACTIVITY_STOPPED
-                                                )
-                                )
+            val isPackageBackgroundEvent =
+                eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
 
             val isSystemStopEvent =
                 (
@@ -511,7 +494,6 @@ class UsageMonitorService : Service() {
                                 )
 
             when {
-
                 isSystemStopEvent -> {
                     if (eventTime >= latestTime) {
                         latestTime = eventTime
@@ -526,12 +508,10 @@ class UsageMonitorService : Service() {
                     }
                 }
 
-                isBackgroundEvent -> {
-                    // An old app's background event must not clear
-                    // a different app that has already resumed.
+                isPackageBackgroundEvent -> {
                     if (
-                        eventPackage == latestPackage &&
-                        eventTime >= latestTime
+                        eventTime >= latestTime &&
+                        latestPackage == eventPackage
                     ) {
                         latestTime = eventTime
                         latestPackage = null
@@ -541,9 +521,10 @@ class UsageMonitorService : Service() {
         }
 
         lastForegroundPackage = latestPackage
-
         return latestPackage
     }
+
+
     private fun createFloatingTimer() {
 
         if (overlayView != null) return

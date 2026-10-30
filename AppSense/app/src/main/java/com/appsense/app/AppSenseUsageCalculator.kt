@@ -11,26 +11,42 @@ data class AppUsageInterval(
     val endTime: Long
 )
 
+/** Android-independent representation of a usage event. */
+data class RawEvent(
+    val packageName: String,
+    val className: String?,
+    val type: RawEventType,
+    val timestamp: Long
+)
+
+enum class RawEventType {
+    RESUMED,
+    PAUSED,
+    STOPPED,
+    SCREEN_OFF,
+    KEYGUARD_SHOWN,
+    DEVICE_SHUTDOWN,
+    OTHER
+}
+
 object AppSenseUsageCalculator {
 
     // Reconstruct foreground state from before midnight.
     // A 48-hour lookback provides context for sessions crossing midnight.
-    private const val LOOKBACK_MILLIS = 48L * 60L * 60L * 1000L
+    private const val LOOKBACK_MILLIS =
+        48L * 60L * 60L * 1000L
 
-    // Prevent orphaned foreground events from inflating usage indefinitely.
-    private const val MAX_INTERVAL_MILLIS = 6L * 60L * 60L * 1000L
+    // Preserve the existing maximum interval duration.
+    private const val MAX_INTERVAL_MILLIS =
+        6L * 60L * 60L * 1000L
 
     /**
-     * Returns non-overlapping package-foreground intervals clipped to [dayStart, dayEnd].
+     * Android wrapper.
      *
-     * Activity events are tracked independently, so pausing one Activity does not close
-     * the package session while another Activity from the same package remains resumed.
+     * Converts Android UsageEvents to RawEvent and delegates
+     * interval calculation to the pure-function overload.
      *
-     * System events are processed before filtering by package name because those events
-     * may belong to another package.
-     *
-     * @param mergeGapMs Optional gap tolerance for merging intervals. The default of 0
-     * preserves the existing behavior by merging only overlapping or touching intervals.
+     * Existing callers can continue using this function.
      */
     fun getIntervals(
         context: Context,
@@ -42,60 +58,116 @@ object AppSenseUsageCalculator {
 
         if (dayEnd <= dayStart) return emptyList()
 
-        val queryStart = (dayStart - LOOKBACK_MILLIS).coerceAtLeast(0L)
+        val queryStart =
+            (dayStart - LOOKBACK_MILLIS).coerceAtLeast(0L)
 
         val manager =
-            context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+            context.getSystemService(Context.USAGE_STATS_SERVICE)
+                    as? UsageStatsManager
                 ?: return emptyList()
 
-        val events = manager.queryEvents(queryStart, dayEnd) ?: return emptyList()
+        val usageEvents =
+            manager.queryEvents(queryStart, dayEnd)
+                ?: return emptyList()
 
+        val rawEvents = mutableListOf<RawEvent>()
         val event = UsageEvents.Event()
+
+        while (usageEvents.hasNextEvent()) {
+
+            usageEvents.getNextEvent(event)
+
+            val rawType = when (event.eventType) {
+
+                UsageEvents.Event.MOVE_TO_FOREGROUND ->
+                    RawEventType.RESUMED
+
+                UsageEvents.Event.MOVE_TO_BACKGROUND ->
+                    RawEventType.PAUSED
+
+                else -> {
+                    when {
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType ==
+                                UsageEvents.Event.ACTIVITY_RESUMED ->
+                            RawEventType.RESUMED
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType ==
+                                UsageEvents.Event.ACTIVITY_PAUSED ->
+                            RawEventType.PAUSED
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType ==
+                                UsageEvents.Event.ACTIVITY_STOPPED ->
+                            RawEventType.STOPPED
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                                event.eventType ==
+                                UsageEvents.Event.SCREEN_NON_INTERACTIVE ->
+                            RawEventType.SCREEN_OFF
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                                event.eventType ==
+                                UsageEvents.Event.KEYGUARD_SHOWN ->
+                            RawEventType.KEYGUARD_SHOWN
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType ==
+                                UsageEvents.Event.DEVICE_SHUTDOWN ->
+                            RawEventType.DEVICE_SHUTDOWN
+
+                        else -> RawEventType.OTHER
+                    }
+                }
+            }
+
+            rawEvents.add(
+                RawEvent(
+                    packageName = event.packageName.orEmpty(),
+                    className = event.className,
+                    type = rawType,
+                    timestamp = event.timeStamp
+                )
+            )
+        }
+
+        return getIntervals(
+            events = rawEvents,
+            packageName = packageName,
+            dayStart = dayStart,
+            dayEnd = dayEnd,
+            mergeGapMs = mergeGapMs
+        )
+    }
+
+    /**
+     * Pure interval calculation.
+     *
+     * This overload has no Android Context or UsageStatsManager dependency,
+     * allowing it to be tested with ordinary JUnit4 tests.
+     */
+    fun getIntervals(
+        events: List<RawEvent>,
+        packageName: String,
+        dayStart: Long,
+        dayEnd: Long,
+        mergeGapMs: Long = 0L
+    ): List<AppUsageInterval> {
+
+        if (dayEnd <= dayStart) return emptyList()
+
         val activeActivities = mutableSetOf<String>()
         val intervals = mutableListOf<AppUsageInterval>()
 
         var packageStart: Long? = null
 
-        fun isForeground(type: Int): Boolean =
-            type == UsageEvents.Event.MOVE_TO_FOREGROUND ||
-                    (
-                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                                    type == UsageEvents.Event.ACTIVITY_RESUMED
-                            )
-
-        fun isBackground(type: Int): Boolean =
-            type == UsageEvents.Event.MOVE_TO_BACKGROUND ||
-                    (
-                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                                    (
-                                            type == UsageEvents.Event.ACTIVITY_PAUSED ||
-                                                    type == UsageEvents.Event.ACTIVITY_STOPPED
-                                            )
-                            )
-
-        fun isSystemStopEvent(type: Int): Boolean {
-
-            val screenOrKeyguardStop =
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-                        (
-                                type == UsageEvents.Event.SCREEN_NON_INTERACTIVE ||
-                                        type == UsageEvents.Event.KEYGUARD_SHOWN
-                                )
-
-            val shutdownStop =
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                        type == UsageEvents.Event.DEVICE_SHUTDOWN
-
-            return screenOrKeyguardStop || shutdownStop
-        }
-
         /**
-         * Close the current package session.
-         *
-         * The interval is clipped to the requested day and capped to the configured
-         * maximum duration.
+         * Close the current package session, clipping it to the requested
+         * time range and preserving the existing maximum-duration cap.
          */
-        fun closeActiveActivities(timestamp: Long) {
+        fun closeSession(timestamp: Long) {
 
             val sessionStart = packageStart ?: return
 
@@ -121,74 +193,94 @@ object AppSenseUsageCalculator {
             packageStart = null
         }
 
-        while (events.hasNextEvent()) {
+        // Process events chronologically within the requested day.
+        val orderedEvents = events
+            .asSequence()
+            .filter {
+                it.timestamp >= dayStart &&
+                        it.timestamp <= dayEnd
+            }
+            .sortedBy { it.timestamp }
+            .toList()
 
-            events.getNextEvent(event)
+        for (rawEvent in orderedEvents) {
 
-            val timestamp = event.timeStamp.coerceIn(queryStart, dayEnd)
+            // System events may belong to a different package.
+            // Process them before filtering by target package.
+            when (rawEvent.type) {
 
-            // IMPORTANT:
-            // Handle system events BEFORE checking the target package.
-            // Screen-off, keyguard and shutdown events can carry another package name.
-            if (isSystemStopEvent(event.eventType)) {
-                closeActiveActivities(timestamp)
-                continue
+                RawEventType.SCREEN_OFF,
+                RawEventType.KEYGUARD_SHOWN,
+                RawEventType.DEVICE_SHUTDOWN -> {
+                    closeSession(rawEvent.timestamp)
+                    continue
+                }
+
+                else -> Unit
             }
 
-            // Ignore activity events from other packages.
-            if (event.packageName != packageName) continue
+            if (rawEvent.packageName != packageName) continue
 
             val activityKey =
-                event.className?.takeIf { it.isNotBlank() }
+                rawEvent.className
+                    ?.takeIf { it.isNotBlank() }
                     ?: "<unknown-activity>"
 
-            when {
+            when (rawEvent.type) {
 
-                isForeground(event.eventType) -> {
+                RawEventType.RESUMED -> {
 
-                    // Duplicate RESUMED/foreground events must not double-count.
+                    // Duplicate foreground events must not double-count.
                     if (
                         activeActivities.add(activityKey) &&
                         activeActivities.size == 1
                     ) {
-                        packageStart = timestamp
+                        packageStart = rawEvent.timestamp
                     }
                 }
 
-                isBackground(event.eventType) -> {
+                RawEventType.PAUSED,
+                RawEventType.STOPPED -> {
 
-                    // Closing one Activity must not close the package session
-                    // while another Activity from the same package remains active.
+                    // Do not close the package session while another
+                    // Activity from the same package remains active.
                     if (
                         activeActivities.remove(activityKey) &&
                         activeActivities.isEmpty()
                     ) {
-                        closeActiveActivities(timestamp)
+                        closeSession(rawEvent.timestamp)
                     }
                 }
+
+                RawEventType.SCREEN_OFF,
+                RawEventType.KEYGUARD_SHOWN,
+                RawEventType.DEVICE_SHUTDOWN,
+                RawEventType.OTHER -> Unit
             }
         }
 
-        // If the package remains foreground at query end, close the interval
-        // at dayEnd while enforcing the maximum interval duration.
+        // Close any session still active at the query end.
         if (activeActivities.isNotEmpty()) {
-            closeActiveActivities(dayEnd)
+            closeSession(dayEnd)
         }
 
-        // Sort and merge overlapping/touching intervals, plus any optional gap
-        // within mergeGapMs. The default 0 keeps existing callers unchanged.
         if (intervals.size < 2) return intervals
 
+        // Preserve the existing interval sorting and merging behavior.
         val sorted = intervals.sortedBy { it.startTime }
         val merged = mutableListOf<AppUsageInterval>()
 
         var currentStart = sorted.first().startTime
         var currentEnd = sorted.first().endTime
+
         val allowedGap = mergeGapMs.coerceAtLeast(0L)
 
         for (next in sorted.drop(1)) {
 
-            if (next.startTime <= currentEnd || next.startTime - currentEnd <= allowedGap) {
+            if (
+                next.startTime <= currentEnd ||
+                next.startTime - currentEnd <= allowedGap
+            ) {
 
                 currentEnd = maxOf(currentEnd, next.endTime)
 
