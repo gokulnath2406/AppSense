@@ -486,7 +486,47 @@ class UsageMonitorService : Service() {
                     )
 
                 } else {
-                    overlay.setContent(null)
+                    val gameStatus = TextView(this).apply {
+                        text = "Your move"
+                        textSize = 16f
+                        setTextColor(0xB3FFFFFF.toInt())
+                        gravity = Gravity.CENTER
+                        includeFontPadding = true
+                    }
+
+                    val gameView = TicTacToeView(
+                        context = this,
+                        onFirstMove = {
+                            logInterventionCompletedOnce()
+                        },
+                        onStatusChanged = { message ->
+                            gameStatus.text = message
+                        }
+                    )
+
+                    val gameContent = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER
+
+                        addView(
+                            gameStatus,
+                            LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            )
+                        )
+
+                        addView(
+                            gameView,
+                            LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                0,
+                                1f
+                            )
+                        )
+                    }
+
+                    overlay.setContent(gameContent)
                 }
 
                 startReminderCountdown()
