@@ -1,15 +1,25 @@
 package com.appsense.app
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -50,6 +60,12 @@ object InterventionTheme {
     const val BREATHING_FINISHED_TEXT_SIZE_SP = 18f
 }
 
+/** Implemented only by interactive content hosted inside InterventionOverlay. */
+interface InterventionInputGuard {
+    fun setInputGuardUntilElapsedRealtimeMs(untilMs: Long)
+    fun setInputBlocked(blocked: Boolean)
+}
+
 class InterventionOverlay(
     private val context: Context,
     private val windowManager: WindowManager,
@@ -77,6 +93,25 @@ class InterventionOverlay(
     private var currentCallbacks: Callbacks? = null
     private var addedToWindowManager = false
 
+    private var showAnimator: AnimatorSet? = null
+    private var dismissAnimator: AnimatorSet? = null
+    private var dismissInProgress = false
+    private var inputGuardUntilElapsedRealtimeMs = 0L
+
+    private val inputGuardEndRunnable = Runnable {
+        if (rootView != null && addedToWindowManager && !dismissInProgress) {
+            closeButton?.alpha = 1f
+            refreshCountdown()
+        }
+    }
+
+    private companion object {
+        const val INPUT_GUARD_MS = 700L
+        const val SCRIM_ANIMATION_MS = 180L
+        const val CARD_ANIMATION_MS = 220L
+        const val DISMISS_ANIMATION_MS = 150L
+    }
+
     val isShowing: Boolean
         get() = addedToWindowManager && rootView != null
 
@@ -91,14 +126,24 @@ class InterventionOverlay(
 
         val existingRoot = rootView
         if (existingRoot != null && addedToWindowManager) {
+            if (dismissInProgress) {
+                // A new show request supersedes an in-progress dismissal.
+                val animator = dismissAnimator
+                dismissAnimator = null
+                animator?.removeAllListeners()
+                animator?.cancel()
+                dismissInProgress = false
+                setContentInputBlocked(false)
+                beginInputGuard()
+                cardView?.let { startEntranceAnimation(existingRoot, it) }
+            }
             updateCard(model)
             refreshCountdown()
             return
         }
 
-        val density = context.resources.displayMetrics.density
         val root = FrameLayout(context).apply {
-            setBackgroundColor(InterventionTheme.SCRIM_COLOR)
+            background = ColorDrawable(Color.TRANSPARENT)
             isClickable = true
             setOnTouchListener { _, _ -> true }
         }
@@ -116,7 +161,10 @@ class InterventionOverlay(
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(InterventionTheme.CARD_CORNER_RADIUS_DP).toFloat()
                 setColor(InterventionTheme.CARD_COLOR)
-                setStroke(dp(InterventionTheme.CARD_STROKE_WIDTH_DP), InterventionTheme.CARD_STROKE_COLOR)
+                setStroke(
+                    dp(InterventionTheme.CARD_STROKE_WIDTH_DP),
+                    InterventionTheme.CARD_STROKE_COLOR
+                )
             }
         }
 
@@ -159,7 +207,9 @@ class InterventionOverlay(
                 cornerRadius = dp(InterventionTheme.BUTTON_CORNER_RADIUS_DP).toFloat()
                 setColor(InterventionTheme.PRIMARY_COLOR)
             }
-            setOnClickListener { currentCallbacks?.onClose() }
+            setOnClickListener {
+                if (canAcceptInput()) currentCallbacks?.onClose()
+            }
         }
         val closeParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -181,6 +231,7 @@ class InterventionOverlay(
                 setColor(Color.TRANSPARENT)
             }
             setOnClickListener {
+                if (!canAcceptInput()) return@setOnClickListener
                 val activeModel = currentModel ?: return@setOnClickListener
                 if (SystemClock.elapsedRealtime() >= activeModel.continueAtElapsedRealtimeMs) {
                     currentCallbacks?.onContinue()
@@ -237,14 +288,11 @@ class InterventionOverlay(
             windowManager.addView(root, params)
             addedToWindowManager = true
             updateCardBounds(root.width, root.height)
+            beginInputGuard()
+            card.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            startEntranceAnimation(root, card)
         } catch (_: Exception) {
-            rootView = null
-            cardView = null
-            contentFrame = null
-            captionView = null
-            closeButton = null
-            continueButton = null
-            addedToWindowManager = false
+            removeOverlay(root)
         }
     }
 
@@ -253,22 +301,73 @@ class InterventionOverlay(
             mainHandler.post { dismiss() }
             return
         }
-        val root = rootView
-        if (root != null && addedToWindowManager) {
-            try {
-                windowManager.removeView(root)
-            } catch (_: Exception) {
+
+        val root = rootView ?: return
+        if (!addedToWindowManager) {
+            removeOverlay(root)
+            return
+        }
+        if (dismissInProgress) return
+
+        dismissInProgress = true
+        mainHandler.removeCallbacks(inputGuardEndRunnable)
+        showAnimator?.cancel()
+        showAnimator = null
+        setContentInputBlocked(true)
+
+        if (isAnimationsDisabled()) {
+            removeOverlay(root)
+            return
+        }
+
+        val card = cardView
+        if (card == null) {
+            removeOverlay(root)
+            return
+        }
+
+        val scrimStartAlpha = (root.background as? ColorDrawable)?.alpha ?: 150
+        val interpolator = DecelerateInterpolator()
+        val scrimAnimator = ValueAnimator.ofInt(scrimStartAlpha, 0).apply {
+            duration = DISMISS_ANIMATION_MS
+            this.interpolator = interpolator
+            addUpdateListener {
+                if (rootView === root && dismissInProgress) {
+                    root.setBackgroundColor(Color.argb(it.animatedValue as Int, 0, 0, 0))
+                }
             }
         }
-        rootView = null
-        cardView = null
-        contentFrame = null
-        captionView = null
-        closeButton = null
-        continueButton = null
-        currentModel = null
-        currentCallbacks = null
-        addedToWindowManager = false
+        val alphaAnimator = ObjectAnimator.ofFloat(card, View.ALPHA, card.alpha, 0f).apply {
+            duration = DISMISS_ANIMATION_MS
+            this.interpolator = interpolator
+        }
+        val scaleXAnimator = ObjectAnimator.ofFloat(card, View.SCALE_X, card.scaleX, 0.96f).apply {
+            duration = DISMISS_ANIMATION_MS
+            this.interpolator = interpolator
+        }
+        val scaleYAnimator = ObjectAnimator.ofFloat(card, View.SCALE_Y, card.scaleY, 0.96f).apply {
+            duration = DISMISS_ANIMATION_MS
+            this.interpolator = interpolator
+        }
+
+        dismissAnimator = AnimatorSet().apply {
+            playTogether(scrimAnimator, alphaAnimator, scaleXAnimator, scaleYAnimator)
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    if (!cancelled && rootView === root && dismissInProgress) {
+                        dismissAnimator = null
+                        removeOverlay(root)
+                    }
+                }
+            })
+            start()
+        }
     }
 
     fun setContent(view: View?) {
@@ -297,6 +396,8 @@ class InterventionOverlay(
                     Gravity.TOP
                 )
             )
+            applyInputGuardRecursively(view, inputGuardUntilElapsedRealtimeMs)
+            if (dismissInProgress) applyInputBlockedRecursively(view, true)
         }
     }
 
@@ -311,7 +412,151 @@ class InterventionOverlay(
         val remainingSeconds = ((remainingMs + 999L) / 1000L).toInt()
         button.text = if (remainingSeconds > 0) "Continue in ${remainingSeconds}s" else "Continue"
         button.isEnabled = remainingMs == 0L
-        button.alpha = if (button.isEnabled) 1f else 0.65f
+        button.alpha = when {
+            dismissInProgress || SystemClock.elapsedRealtime() < inputGuardUntilElapsedRealtimeMs -> 0.6f
+            button.isEnabled -> 1f
+            else -> 0.65f
+        }
+    }
+
+    private fun isAnimationsDisabled(): Boolean {
+        return try {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun canAcceptInput(): Boolean {
+        return rootView != null &&
+                addedToWindowManager &&
+                !dismissInProgress &&
+                SystemClock.elapsedRealtime() >= inputGuardUntilElapsedRealtimeMs
+    }
+
+    private fun beginInputGuard() {
+        inputGuardUntilElapsedRealtimeMs = SystemClock.elapsedRealtime() + INPUT_GUARD_MS
+        closeButton?.alpha = 0.6f
+        refreshCountdown()
+        setContentInputGuard(inputGuardUntilElapsedRealtimeMs)
+        mainHandler.removeCallbacks(inputGuardEndRunnable)
+        mainHandler.postDelayed(inputGuardEndRunnable, INPUT_GUARD_MS)
+    }
+
+    private fun setContentInputGuard(untilMs: Long) {
+        applyInputGuardRecursively(contentFrame, untilMs)
+    }
+
+    private fun setContentInputBlocked(blocked: Boolean) {
+        applyInputBlockedRecursively(contentFrame, blocked)
+    }
+
+    private fun applyInputGuardRecursively(view: View?, untilMs: Long) {
+        if (view == null) return
+        if (view is InterventionInputGuard) {
+            view.setInputGuardUntilElapsedRealtimeMs(untilMs)
+        }
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                applyInputGuardRecursively(view.getChildAt(index), untilMs)
+            }
+        }
+    }
+
+    private fun applyInputBlockedRecursively(view: View?, blocked: Boolean) {
+        if (view == null) return
+        if (view is InterventionInputGuard) {
+            view.setInputBlocked(blocked)
+        }
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                applyInputBlockedRecursively(view.getChildAt(index), blocked)
+            }
+        }
+    }
+
+    private fun startEntranceAnimation(root: FrameLayout, card: View) {
+        showAnimator?.cancel()
+        showAnimator = null
+
+        if (isAnimationsDisabled()) {
+            root.setBackgroundColor(InterventionTheme.SCRIM_COLOR)
+            card.alpha = 1f
+            card.scaleX = 1f
+            card.scaleY = 1f
+            return
+        }
+
+        root.setBackgroundColor(Color.TRANSPARENT)
+        card.alpha = 0f
+        card.scaleX = 0.96f
+        card.scaleY = 0.96f
+
+        val interpolator = DecelerateInterpolator()
+        val scrimAnimator = ValueAnimator.ofInt(0, 150).apply {
+            duration = SCRIM_ANIMATION_MS
+            this.interpolator = interpolator
+            addUpdateListener {
+                if (rootView === root && !dismissInProgress) {
+                    root.setBackgroundColor(Color.argb(it.animatedValue as Int, 0, 0, 0))
+                }
+            }
+        }
+        val alphaAnimator = ObjectAnimator.ofFloat(card, View.ALPHA, 0f, 1f).apply {
+            duration = CARD_ANIMATION_MS
+            this.interpolator = interpolator
+        }
+        val scaleXAnimator = ObjectAnimator.ofFloat(card, View.SCALE_X, 0.96f, 1f).apply {
+            duration = CARD_ANIMATION_MS
+            this.interpolator = interpolator
+        }
+        val scaleYAnimator = ObjectAnimator.ofFloat(card, View.SCALE_Y, 0.96f, 1f).apply {
+            duration = CARD_ANIMATION_MS
+            this.interpolator = interpolator
+        }
+
+        showAnimator = AnimatorSet().apply {
+            playTogether(scrimAnimator, alphaAnimator, scaleXAnimator, scaleYAnimator)
+            start()
+        }
+    }
+
+    private fun removeOverlay(root: FrameLayout) {
+        if (rootView !== root) return
+
+        showAnimator?.cancel()
+        showAnimator = null
+        val runningDismissAnimator = dismissAnimator
+        dismissAnimator = null
+        runningDismissAnimator?.removeAllListeners()
+        runningDismissAnimator?.cancel()
+
+        mainHandler.removeCallbacks(inputGuardEndRunnable)
+
+        val shouldRemoveFromWindow = addedToWindowManager
+        addedToWindowManager = false
+        if (shouldRemoveFromWindow) {
+            try {
+                windowManager.removeView(root)
+            } catch (_: Exception) {
+                // The window may already have been removed by the system.
+            }
+        }
+
+        rootView = null
+        cardView = null
+        contentFrame = null
+        captionView = null
+        closeButton = null
+        continueButton = null
+        currentModel = null
+        currentCallbacks = null
+        inputGuardUntilElapsedRealtimeMs = 0L
+        dismissInProgress = false
     }
 
     private fun updateCard(model: Model) {
@@ -342,7 +587,8 @@ class InterventionOverlay(
         }
     }
 
-    private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density + 0.5f).toInt()
+    private fun dp(value: Int): Int =
+        (value * context.resources.displayMetrics.density + 0.5f).toInt()
 
     private class MaxHeightLinearLayout(context: Context) : LinearLayout(context) {
         var maxHeightPx: Int = Int.MAX_VALUE

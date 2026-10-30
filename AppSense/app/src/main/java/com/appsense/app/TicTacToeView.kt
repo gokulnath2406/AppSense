@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.animation.LinearInterpolator
@@ -18,7 +19,7 @@ class TicTacToeView(
     context: Context,
     private val onFirstMove: () -> Unit,
     private val onStatusChanged: (String) -> Unit
-) : View(context) {
+) : View(context), InterventionInputGuard {
 
     private val engine = TicTacToeEngine()
     private val handler = Handler(Looper.getMainLooper())
@@ -32,6 +33,9 @@ class TicTacToeView(
     private var winningProgress = 1f
 
     private var winningAnimator: ValueAnimator? = null
+    private var inputGuardUntilElapsedRealtimeMs = 0L
+    private var inputBlocked = false
+    private val inputGuardRefreshRunnable = Runnable { invalidate() }
 
     private data class BoardLayout(
         val left: Float,
@@ -79,7 +83,7 @@ class TicTacToeView(
     }
 
     private val opponentRunnable = Runnable {
-        if (engine.result != TicTacToeEngine.Result.IN_PROGRESS) {
+        if (inputBlocked || engine.result != TicTacToeEngine.Result.IN_PROGRESS) {
             return@Runnable
         }
 
@@ -102,6 +106,22 @@ class TicTacToeView(
 
         invalidate()
     }
+
+    override fun setInputGuardUntilElapsedRealtimeMs(untilMs: Long) {
+        inputGuardUntilElapsedRealtimeMs = untilMs
+        handler.removeCallbacks(inputGuardRefreshRunnable)
+        val remaining = (untilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        handler.postDelayed(inputGuardRefreshRunnable, remaining)
+        invalidate()
+    }
+
+    override fun setInputBlocked(blocked: Boolean) {
+        inputBlocked = blocked
+        invalidate()
+    }
+
+    private fun isInputGuardActive(): Boolean =
+        inputBlocked || SystemClock.elapsedRealtime() < inputGuardUntilElapsedRealtimeMs
 
     init {
         isClickable = true
@@ -193,6 +213,9 @@ class TicTacToeView(
         drawWinningLine(canvas, layout)
 
         if (engine.result != TicTacToeEngine.Result.IN_PROGRESS) {
+            val controlAlpha = if (isInputGuardActive()) 153 else 255
+            buttonPaint.alpha = controlAlpha
+            buttonTextPaint.alpha = controlAlpha
             canvas.drawRoundRect(
                 layout.playAgainRect,
                 dp(10f),
@@ -210,6 +233,8 @@ class TicTacToeView(
                 baseline,
                 buttonTextPaint
             )
+            buttonPaint.alpha = 255
+            buttonTextPaint.alpha = 255
         }
     }
 
@@ -281,6 +306,7 @@ class TicTacToeView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (isInputGuardActive()) return true
         if (event.actionMasked != MotionEvent.ACTION_UP) {
             return true
         }
@@ -376,6 +402,9 @@ class TicTacToeView(
 
     override fun onDetachedFromWindow() {
         handler.removeCallbacks(opponentRunnable)
+        handler.removeCallbacks(inputGuardRefreshRunnable)
+        winningAnimator?.removeAllUpdateListeners()
+        winningAnimator?.removeAllListeners()
         winningAnimator?.cancel()
         winningAnimator = null
         super.onDetachedFromWindow()

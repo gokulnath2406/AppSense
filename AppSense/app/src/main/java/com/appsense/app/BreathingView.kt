@@ -20,7 +20,7 @@ import kotlin.math.roundToInt
 class BreathingView(
     context: Context,
     private val onFinished: (completedFully: Boolean) -> Unit
-) : View(context) {
+) : View(context), InterventionInputGuard {
 
     private enum class Phase {
         INHALE,
@@ -72,6 +72,9 @@ class BreathingView(
     private var phaseAnimator: ValueAnimator? = null
     private var skipBounds = RectF()
     private var skipVisible = false
+    private var inputGuardUntilElapsedRealtimeMs = 0L
+    private var inputBlocked = false
+    private val inputGuardRefreshRunnable = Runnable { invalidate() }
 
     private val startBreathingAfterPreparation = Runnable {
         if (detached || phase == Phase.FINISHED) return@Runnable
@@ -98,6 +101,22 @@ class BreathingView(
             }
         }
     }
+
+    override fun setInputGuardUntilElapsedRealtimeMs(untilMs: Long) {
+        inputGuardUntilElapsedRealtimeMs = untilMs
+        removeCallbacks(inputGuardRefreshRunnable)
+        val remaining = (untilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        postDelayed(inputGuardRefreshRunnable, remaining)
+        invalidate()
+    }
+
+    override fun setInputBlocked(blocked: Boolean) {
+        inputBlocked = blocked
+        invalidate()
+    }
+
+    private fun isInputGuardActive(): Boolean =
+        inputBlocked || SystemClock.elapsedRealtime() < inputGuardUntilElapsedRealtimeMs
 
     init {
         isClickable = true
@@ -135,6 +154,7 @@ class BreathingView(
         phaseAnimator = null
         removeCallbacks(fallbackTick)
         removeCallbacks(startBreathingAfterPreparation)
+        removeCallbacks(inputGuardRefreshRunnable)
         super.onDetachedFromWindow()
     }
 
@@ -209,13 +229,16 @@ class BreathingView(
                 centerX + 52f * density,
                 skipY + 8f * density
             )
+            skipPaint.alpha = if (isInputGuardActive()) 153 else 255
             canvas.drawText("Skip", centerX, skipY, skipPaint)
+            skipPaint.alpha = 255
         } else {
             skipBounds.setEmpty()
         }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (isInputGuardActive()) return true
         if (event.actionMasked == MotionEvent.ACTION_UP && skipVisible &&
             skipBounds.contains(event.x, event.y)
         ) {
@@ -330,7 +353,7 @@ class BreathingView(
     }
 
     private fun finishExercise(completedFully: Boolean) {
-        if (detached || phase == Phase.FINISHED || callbackSent) return
+        if (detached || phase == Phase.FINISHED || callbackSent || inputBlocked) return
         phase = Phase.FINISHED
         callbackSent = true
         phaseAnimator?.removeAllUpdateListeners()
@@ -344,3 +367,4 @@ class BreathingView(
         }
     }
 }
+
