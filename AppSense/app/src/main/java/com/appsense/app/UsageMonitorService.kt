@@ -65,10 +65,11 @@ class UsageMonitorService : Service() {
     private val sessionTracker = SessionTracker()
 
     // Monitoring-thread state for the visible timer, which resets per tracked app.
+    // Last tracked package is retained during the SessionTracker grace period.
     private var floatingTimerPackage: String? = null
-    private var floatingTimerStartedAtElapsedRealtime: Long = 0L
 
     private var lastForegroundPackage: String? = null
+    private var lastForegroundClass: String? = null
 
     // Cache today's full event-history calculation. The visible session timer still
     // refreshes every second; only the more expensive daily total is refreshed every 30s.
@@ -192,8 +193,7 @@ class UsageMonitorService : Service() {
     }
 
     private fun updateFloatingTimer() {
-        // Runs on the monitoring thread. It gathers usage/foreground data and
-        // updates SessionTracker only; UI and intervention state are main-thread-owned.
+
         val screenOn =
             (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
 
@@ -209,122 +209,158 @@ class UsageMonitorService : Service() {
                 ?.toSet()
                 ?: emptySet()
 
-        // Read lightweight intervention preferences on every monitoring tick so UI changes apply promptly.
         val interventionSettings = InterventionPreferences.read(this)
 
+        val overlayAllowed = Settings.canDrawOverlays(this)
+
         if (!screenOn) {
-            // Foreground-event reconstruction state belongs to the monitoring thread.
             lastForegroundPackage = null
+            lastForegroundClass = null
             isForegroundStateInitialized = false
         }
 
         val foregroundPackage =
-            if (screenOn && selectedApps.isNotEmpty()) {
+            if (screenOn && overlayAllowed && selectedApps.isNotEmpty()) {
                 getCurrentForegroundApp()
             } else {
                 null
             }
 
         val trackedAppInForeground =
-            foregroundPackage != null && selectedApps.contains(foregroundPackage)
+            foregroundPackage != null &&
+                    selectedApps.contains(foregroundPackage)
 
-        // Reset the visible timer when no tracked app is foreground (including screen-off).
-        if (!trackedAppInForeground) {
-            floatingTimerPackage = null
-            floatingTimerStartedAtElapsedRealtime = 0L
-        }
+        val nowElapsedRealtime = SystemClock.elapsedRealtime()
+
+        // Invalid monitoring conditions terminate the session immediately.
+        val monitoringAllowed =
+            screenOn &&
+                    overlayAllowed &&
+                    selectedApps.isNotEmpty()
 
         val elapsed = sessionTracker.onTick(
-            nowMonotonicMs = SystemClock.elapsedRealtime(),
+            nowMonotonicMs = nowElapsedRealtime,
             trackedAppInForeground = trackedAppInForeground,
-            screenOn = screenOn
+            screenOn = monitoringAllowed
         )
-        // Snapshot transition flags here because the next monitoring tick may change them.
+
         val newSessionStarted = sessionTracker.newSessionStarted
         val sessionEnded = sessionTracker.sessionEnded
 
-        val overlayAllowed = Settings.canDrawOverlays(this)
-        if (!overlayAllowed || !screenOn || selectedApps.isEmpty() || !trackedAppInForeground) {
+        if (!monitoringAllowed || sessionEnded) {
+
+            floatingTimerPackage = null
+
             mainHandler.post {
-                if (!screenOn || selectedApps.isEmpty() || !trackedAppInForeground) {
-                    currentPackage = null
-                }
+
+                currentPackage = null
+
                 if (sessionEnded) {
-                    resetReminderScheduleIfSessionEnded(true, interventionSettings.firstReminderMinutes * 60_000L)
+                    resetReminderScheduleIfSessionEnded(
+                        true,
+                        interventionSettings.firstReminderMinutes * 60_000L
+                    )
                     remindersInSession = 0
                 }
-                if (!screenOn || selectedApps.isEmpty() || !trackedAppInForeground) {
-                    cachedUsageAt = 0L
-                }
+
+                cachedUsageAt = 0L
+
                 resetInterventionUi()
                 hideFloatingTimer()
             }
+
             return
         }
 
-        val packageName = foregroundPackage ?: return
-        val nowElapsedRealtime = SystemClock.elapsedRealtime()
-
-        // The floating "Current" timer is per app; the shared SessionTracker remains
-        // continuous for reminders across tracked-app switches.
-        if (
-            floatingTimerPackage != packageName ||
-            floatingTimerStartedAtElapsedRealtime == 0L
-        ) {
-            floatingTimerPackage = packageName
-            floatingTimerStartedAtElapsedRealtime = nowElapsedRealtime
+        // Remember the most recently tracked app.
+        // Do not clear it during a temporary untracked gap.
+        if (trackedAppInForeground) {
+            floatingTimerPackage = foregroundPackage
         }
-        val appElapsed = nowElapsedRealtime - floatingTimerStartedAtElapsedRealtime
 
-        val nowWallClock = System.currentTimeMillis()
-        val todayTotal = getTodayUsage(packageName, nowWallClock)
+        val packageName =
+            foregroundPackage ?: floatingTimerPackage ?: return
+
+        val todayTotal =
+            if (trackedAppInForeground) {
+                getTodayUsage(
+                    packageName,
+                    System.currentTimeMillis()
+                )
+            } else {
+                if (cachedUsagePackage == packageName) {
+                    cachedTodayUsage
+                } else {
+                    0L
+                }
+            }
 
         mainHandler.post {
-            // The session may span tracked-app switches and short untracked gaps.
-            val firstReminderMs = interventionSettings.firstReminderMinutes * 60_000L
-            val repeatReminderMs = interventionSettings.repeatReminderMinutes * 60_000L
+
+            val firstReminderMs =
+                interventionSettings.firstReminderMinutes * 60_000L
+
+            val repeatReminderMs =
+                interventionSettings.repeatReminderMinutes * 60_000L
+
             if (newSessionStarted) {
                 nextReminderElapsedMs = firstReminderMs
                 remindersInSession = 0
             }
+
             if (sessionEnded) {
-                resetReminderScheduleIfSessionEnded(true, firstReminderMs)
+                resetReminderScheduleIfSessionEnded(
+                    true,
+                    firstReminderMs
+                )
                 remindersInSession = 0
             }
 
-            // Settings changes take effect on the next tick, including disabling an active intervention.
+            // Preserve existing intervention settings behaviour.
             if (!interventionSettings.interventionEnabled ||
-                (activeReminderType == "breathing" && !interventionSettings.breathingEnabled) ||
-                (activeReminderType == "game" && !interventionSettings.gameEnabled)
+                (activeReminderType == "breathing" &&
+                        !interventionSettings.breathingEnabled) ||
+                (activeReminderType == "game" &&
+                        !interventionSettings.gameEnabled)
             ) {
                 resetInterventionUi()
             }
 
-            if (currentPackage != packageName) {
-                currentPackage = packageName
-                activeReminderType = null
-                abandonInterventionAudioFocus()
-                interventionOverlay?.dismiss()
-                cancelBreathingExercise()
+            // Temporary untracked foreground:
+            // Keep the pill and active intervention alive during grace.
+            if (!trackedAppInForeground) {
+                hideFloatingTimer()
+                return@post
+            }
 
-                // Collapse any reminder expanded for the previous tracked app.
-                if (isExpanded) {
-                    collapseFloatingTimer()
+            // Update package without dismissing an active intervention.
+            if (currentPackage != packageName) {
+
+                currentPackage = packageName
+
+                if (activeReminderType == null) {
+
+                    if (isExpanded) {
+                        collapseFloatingTimer()
+                    }
                 }
             }
 
-            showFloatingTimer(appElapsed, todayTotal)
+            // IMPORTANT:
+            // Pill and intervention now use the SAME elapsed value.
+            showFloatingTimer(elapsed, todayTotal)
 
             if (remindersInSession == 0) {
-                // Keep the configurable first threshold in effect until the first reminder is shown.
                 nextReminderElapsedMs = firstReminderMs
             } else {
-                // Recalculate from the last reminder so repeat-interval edits take effect next tick.
-                nextReminderElapsedMs = reminderElapsedMs + repeatReminderMs
+                nextReminderElapsedMs =
+                    reminderElapsedMs + repeatReminderMs
             }
 
             val anyInterventionTypeEnabled =
-                interventionSettings.breathingEnabled || interventionSettings.gameEnabled
+                interventionSettings.breathingEnabled ||
+                        interventionSettings.gameEnabled
+
             if (
                 elapsed >= nextReminderElapsedMs &&
                 interventionSettings.interventionEnabled &&
@@ -333,81 +369,126 @@ class UsageMonitorService : Service() {
                 Settings.canDrawOverlays(this) &&
                 currentPackage == packageName
             ) {
+
                 val reminderType = when {
-                    interventionSettings.breathingEnabled && interventionSettings.gameEnabled ->
-                        if (kotlin.random.Random.nextBoolean()) "breathing" else "game"
-                    interventionSettings.breathingEnabled -> "breathing"
-                    else -> "game"
+
+                    interventionSettings.breathingEnabled &&
+                            interventionSettings.gameEnabled ->
+                        if (kotlin.random.Random.nextBoolean()) {
+                            "breathing"
+                        } else {
+                            "game"
+                        }
+
+                    interventionSettings.breathingEnabled ->
+                        "breathing"
+
+                    else ->
+                        "game"
                 }
+
                 if (isExpanded) {
                     collapseFloatingTimer()
                 }
+
                 activeReminderType = reminderType
+
                 if (reminderType == "breathing") {
                     requestInterventionAudioFocus()
                 }
+
                 reminderElapsedMs = elapsed
                 remindersInSession++
+
                 interventionOutcomeLogged = false
-                val countdownSeconds = min(remindersInSession * 5, 20)
+
+                val countdownSeconds =
+                    min(remindersInSession * 5, 20)
+
                 reminderContinueAtElapsedRealtimeMs =
-                    SystemClock.elapsedRealtime() + countdownSeconds * 1000L
+                    SystemClock.elapsedRealtime() +
+                            countdownSeconds * 1000L
+
                 gameCells = MutableList(9) { "" }
                 gameFinished = false
-                // Schedule repeats from the actual reminder time; if interventions are disabled,
-                // the pending threshold remains eligible when the user re-enables them.
-                nextReminderElapsedMs = elapsed + repeatReminderMs
+
+                nextReminderElapsedMs =
+                    elapsed + repeatReminderMs
+
                 val appLabel = try {
+
                     packageManager.getApplicationLabel(
                         packageManager.getApplicationInfo(packageName, 0)
                     ).toString()
+
                 } catch (_: Exception) {
                     packageName
                 }
+
                 val overlay = interventionOverlay ?: InterventionOverlay(
                     this,
                     windowManager,
                     mainHandler
-                ).also { interventionOverlay = it }
+                ).also {
+                    interventionOverlay = it
+                }
+
                 overlay.show(
                     InterventionOverlay.Model(
                         appLabel = appLabel,
                         minutes = (reminderElapsedMs / 60_000L).toInt(),
                         type = reminderType,
-                        continueAtElapsedRealtimeMs = reminderContinueAtElapsedRealtimeMs
+                        continueAtElapsedRealtimeMs =
+                            reminderContinueAtElapsedRealtimeMs
                     ),
                     object : InterventionOverlay.Callbacks {
+
                         override fun onClose() {
                             closeCurrentAppToHome()
                         }
 
                         override fun onContinue() {
+
                             logInterventionDismissedOnce()
+
                             activeReminderType = null
+
                             abandonInterventionAudioFocus()
                             cancelBreathingExercise()
                             cancelReminderCountdown()
+
                             gameCells = MutableList(9) { "" }
                             gameFinished = false
+
                             interventionOverlay?.dismiss()
                         }
                     }
                 )
+
                 if (!overlay.isShowing) {
                     abandonInterventionAudioFocus()
                 }
+
                 if (reminderType == "breathing") {
+
                     overlay.setContent(
                         BreathingView(this) { _ ->
-                            if (activeReminderType == "breathing" && interventionOverlay?.isShowing == true) {
+
+                            if (
+                                activeReminderType == "breathing" &&
+                                interventionOverlay?.isShowing == true
+                            ) {
                                 logInterventionCompletedOnce()
                             }
+
                             abandonInterventionAudioFocus()
                         }
                     )
+
                 } else {
                     overlay.setContent(null)
                 }
+
                 startReminderCountdown()
                 InterventionDailyLogStore.recordShown(this)
             }
@@ -439,18 +520,21 @@ class UsageMonitorService : Service() {
         }
     }
     private fun getCurrentForegroundApp(): String? {
+
         val usageStatsManager =
             getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
 
         val endTime = System.currentTimeMillis()
 
-        val lookbackMillis = if (isForegroundStateInitialized) {
-            60_000L
-        } else {
-            2L * 60L * 60L * 1000L
-        }
+        val lookbackMillis =
+            if (isForegroundStateInitialized) {
+                60_000L
+            } else {
+                2L * 60L * 60L * 1000L
+            }
 
-        val startTime = (endTime - lookbackMillis).coerceAtLeast(0L)
+        val startTime =
+            (endTime - lookbackMillis).coerceAtLeast(0L)
 
         val usageEvents = usageStatsManager.queryEvents(
             startTime,
@@ -460,14 +544,18 @@ class UsageMonitorService : Service() {
         isForegroundStateInitialized = true
 
         val event = UsageEvents.Event()
+
         var latestPackage = lastForegroundPackage
+        var latestClass = lastForegroundClass
         var latestTime = 0L
 
         while (usageEvents.hasNextEvent()) {
+
             usageEvents.getNextEvent(event)
 
             val eventType = event.eventType
             val eventPackage = event.packageName ?: continue
+            val eventClass = event.className
             val eventTime = event.timeStamp
 
             val isForegroundEvent =
@@ -476,6 +564,10 @@ class UsageMonitorService : Service() {
                                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                                         eventType == UsageEvents.Event.ACTIVITY_RESUMED
                                 )
+
+            val isActivityPausedEvent =
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                        eventType == UsageEvents.Event.ACTIVITY_PAUSED
 
             val isPackageBackgroundEvent =
                 eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
@@ -494,33 +586,66 @@ class UsageMonitorService : Service() {
                                 )
 
             when {
+
                 isSystemStopEvent -> {
+
                     if (eventTime >= latestTime) {
+
                         latestTime = eventTime
+
                         latestPackage = null
+                        latestClass = null
                     }
                 }
 
                 isForegroundEvent -> {
+
                     if (eventTime >= latestTime) {
+
                         latestTime = eventTime
+
                         latestPackage = eventPackage
+                        latestClass = eventClass
+                    }
+                }
+
+                isActivityPausedEvent -> {
+
+                    // A paused activity must not clear a newer resumed activity
+                    // belonging to the same package.
+                    if (
+                        eventTime >= latestTime &&
+                        latestPackage == eventPackage &&
+                        latestClass == eventClass
+                    ) {
+
+                        latestTime = eventTime
+
+                        latestPackage = null
+                        latestClass = null
                     }
                 }
 
                 isPackageBackgroundEvent -> {
+
                     if (
                         eventTime >= latestTime &&
-                        latestPackage == eventPackage
+                        latestPackage == eventPackage &&
+                        latestClass == eventClass
                     ) {
+
                         latestTime = eventTime
+
                         latestPackage = null
+                        latestClass = null
                     }
                 }
             }
         }
 
         lastForegroundPackage = latestPackage
+        lastForegroundClass = latestClass
+
         return latestPackage
     }
 

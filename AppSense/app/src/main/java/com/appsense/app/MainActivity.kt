@@ -1134,6 +1134,16 @@ fun InterventionSettingsScreen(
         mutableStateOf(InterventionPreferences.read(context))
     }
 
+    var showTypeRequiredWarning by remember {
+        mutableStateOf(false)
+    }
+
+    val hasInterventionType =
+        settings.breathingEnabled || settings.gameEnabled
+
+    val invalidConfiguration =
+        settings.interventionEnabled && !hasInterventionType
+
     fun update(next: InterventionSettings) {
         settings = next.copy(
             firstReminderMinutes = next.firstReminderMinutes.coerceIn(1, 120),
@@ -1155,13 +1165,18 @@ fun InterventionSettingsScreen(
                 .padding(horizontal = 22.dp, vertical = 20.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = onBack) { Text("←") }
+                OutlinedButton(onClick = onBack) {
+                    Text("←")
+                }
+
                 Spacer(modifier = Modifier.width(12.dp))
+
                 Column {
                     Text(
                         text = "Intervention settings",
                         style = MaterialTheme.typography.headlineSmall
                     )
+
                     Text(
                         text = "Choose when and how AppSense nudges you.",
                         style = MaterialTheme.typography.bodySmall,
@@ -1179,26 +1194,88 @@ fun InterventionSettingsScreen(
                 tonalElevation = 1.dp
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
+
                     SettingsSwitchRow(
                         title = "Interventions enabled",
                         subtitle = "Allow reminders while using tracked apps.",
                         checked = settings.interventionEnabled,
-                        onCheckedChange = { update(settings.copy(interventionEnabled = it)) }
+                        onCheckedChange = { enabled ->
+
+                            if (enabled && !hasInterventionType) {
+                                showTypeRequiredWarning = true
+                            } else {
+                                showTypeRequiredWarning = false
+
+                                update(
+                                    settings.copy(
+                                        interventionEnabled = enabled
+                                    )
+                                )
+                            }
+                        }
                     )
+
                     Spacer(modifier = Modifier.height(12.dp))
+
                     SettingsSwitchRow(
                         title = "Breathing exercise",
                         subtitle = "Allow 10-second breathing resets.",
                         checked = settings.breathingEnabled,
-                        onCheckedChange = { update(settings.copy(breathingEnabled = it)) }
+                        onCheckedChange = { enabled ->
+
+                            if (
+                                !enabled &&
+                                settings.interventionEnabled &&
+                                !settings.gameEnabled
+                            ) {
+                                showTypeRequiredWarning = true
+                            } else {
+                                showTypeRequiredWarning = false
+
+                                update(
+                                    settings.copy(
+                                        breathingEnabled = enabled
+                                    )
+                                )
+                            }
+                        }
                     )
+
                     Spacer(modifier = Modifier.height(12.dp))
+
                     SettingsSwitchRow(
                         title = "Tic-Tac-Toe game",
                         subtitle = "Allow a short game break.",
                         checked = settings.gameEnabled,
-                        onCheckedChange = { update(settings.copy(gameEnabled = it)) }
+                        onCheckedChange = { enabled ->
+
+                            if (
+                                !enabled &&
+                                settings.interventionEnabled &&
+                                !settings.breathingEnabled
+                            ) {
+                                showTypeRequiredWarning = true
+                            } else {
+                                showTypeRequiredWarning = false
+
+                                update(
+                                    settings.copy(
+                                        gameEnabled = enabled
+                                    )
+                                )
+                            }
+                        }
                     )
+
+                    if (showTypeRequiredWarning || invalidConfiguration) {
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "Enable at least one intervention type (Breathing or Tic-Tac-Toe).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFB3261E)
+                        )
+                    }
                 }
             }
 
@@ -1211,29 +1288,49 @@ fun InterventionSettingsScreen(
                 tonalElevation = 1.dp
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
-                    Text("Reminder timing", style = MaterialTheme.typography.titleMedium)
+
+                    Text(
+                        "Reminder timing",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
                     Spacer(modifier = Modifier.height(14.dp))
+
                     ReminderMinutesStepper(
                         title = "First reminder",
                         subtitle = "Time in a tracked-app session before the first reminder.",
                         value = settings.firstReminderMinutes,
-                        onValueChange = { update(settings.copy(firstReminderMinutes = it)) }
+                        onValueChange = {
+                            update(
+                                settings.copy(firstReminderMinutes = it)
+                            )
+                        }
                     )
+
                     Spacer(modifier = Modifier.height(16.dp))
+
                     ReminderMinutesStepper(
                         title = "Repeat reminder",
                         subtitle = "Wait this many minutes between later reminders.",
                         value = settings.repeatReminderMinutes,
-                        onValueChange = { update(settings.copy(repeatReminderMinutes = it)) }
+                        onValueChange = {
+                            update(
+                                settings.copy(repeatReminderMinutes = it)
+                            )
+                        }
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+
             Button(
                 modifier = Modifier.fillMaxWidth(),
+                enabled = !invalidConfiguration,
                 onClick = onBack
-            ) { Text("Done") }
+            ) {
+                Text("Done")
+            }
         }
     }
 }

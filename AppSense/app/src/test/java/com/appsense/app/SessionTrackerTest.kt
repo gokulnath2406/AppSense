@@ -71,4 +71,30 @@ class SessionTrackerTest {
         assertEquals(0L, tracker.onTick(62_000L, false, true))
         assertTrue(tracker.sessionEnded)
     }
+
+    @Test
+    fun resumedTrackedAppAfterShortGapKeepsOriginalSessionClock() {
+
+        val tracker = SessionTracker()
+
+        assertEquals(
+            0L,
+            tracker.onTick(1_000L, true, true)
+        )
+
+        // Temporary untracked app.
+        assertEquals(
+            5_000L,
+            tracker.onTick(6_000L, false, true)
+        )
+
+        // Another tracked app becomes foreground.
+        assertEquals(
+            12_000L,
+            tracker.onTick(13_000L, true, true)
+        )
+
+        assertFalse(tracker.newSessionStarted)
+        assertFalse(tracker.sessionEnded)
+    }
 }
