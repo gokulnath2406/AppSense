@@ -25,8 +25,6 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.Toast
 import android.widget.TextView
-import android.widget.Button
-import android.widget.ScrollView
 import android.os.Handler
 import android.os.Looper
 import android.content.pm.ServiceInfo
@@ -41,6 +39,7 @@ class UsageMonitorService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         private const val POLL_INTERVAL = 1000L
+
         // Rebuild today's event history less often than the UI timer refreshes.
         private const val USAGE_TOTAL_REFRESH_INTERVAL = 30_000L
 
@@ -53,12 +52,14 @@ class UsageMonitorService : Service() {
 
         private const val YELLOW_AFTER_MS = 30L * 60L * 1000L
         private const val RED_AFTER_MS = 60L * 60L * 1000L
+
         // Defaults used when SharedPreferences has not been configured yet.
         private const val FIRST_REMINDER_MS = 15L * 60L * 1000L
         private const val REPEAT_REMINDER_MS = 10L * 60L * 1000L
     }
 
     private var monitoringThread: Thread? = null
+
     @Volatile
     private var isMonitoring = false
 
@@ -80,10 +81,14 @@ class UsageMonitorService : Service() {
 
     // Cache today's full event-history calculation. The visible session timer still
     // refreshes every second; only the more expensive daily total is refreshed every 30s.
-    @Volatile private var cachedUsagePackage: String? = null
-    @Volatile private var cachedUsageDayStart: Long = 0L
-    @Volatile private var cachedUsageAt: Long = 0L
-    @Volatile private var cachedTodayUsage: Long = 0L
+    @Volatile
+    private var cachedUsagePackage: String? = null
+    @Volatile
+    private var cachedUsageDayStart: Long = 0L
+    @Volatile
+    private var cachedUsageAt: Long = 0L
+    @Volatile
+    private var cachedTodayUsage: Long = 0L
 
     // On service startup, reconstruct foreground state from a wider event window.
     // Subsequent polling uses the short window to avoid repeatedly scanning history.
@@ -111,13 +116,6 @@ class UsageMonitorService : Service() {
     private var interventionAudioFocusHeld = false
     private var gameCells = MutableList(9) { "" }
     private var gameFinished = false
-    private var featurePanel: LinearLayout? = null
-    private var featureScrollView: ScrollView? = null
-    private var featureStatusView: TextView? = null
-    private var featureActionButton: Button? = null
-    private var continueButton: Button? = null
-    private var closeAppButton: Button? = null
-    private var gameButtons: MutableList<Button> = mutableListOf()
 
     // Cached expanded-view children.
     // They are created once and reused to avoid rebuilding the UI
@@ -597,6 +595,7 @@ class UsageMonitorService : Service() {
             InterventionDailyLogStore.recordDismissed(this)
         }
     }
+
     private fun getCurrentForegroundApp(): String? {
 
         val usageStatsManager =
@@ -623,9 +622,7 @@ class UsageMonitorService : Service() {
 
         val event = UsageEvents.Event()
 
-        var latestPackage = lastForegroundPackage
-        var latestClass = lastForegroundClass
-        var latestTime = 0L
+        val foregroundEvents = mutableListOf<ForegroundEvent>()
 
         while (usageEvents.hasNextEvent()) {
 
@@ -663,68 +660,46 @@ class UsageMonitorService : Service() {
                                         eventType == UsageEvents.Event.DEVICE_SHUTDOWN
                                 )
 
-            when {
+            val mappedType = when {
 
-                isSystemStopEvent -> {
+                isSystemStopEvent ->
+                    ForegroundEvent.Type.SYSTEM_STOP
 
-                    if (eventTime >= latestTime) {
+                isForegroundEvent ->
+                    ForegroundEvent.Type.FOREGROUND
 
-                        latestTime = eventTime
+                isActivityPausedEvent ->
+                    ForegroundEvent.Type.PAUSED
 
-                        latestPackage = null
-                        latestClass = null
-                    }
-                }
+                isPackageBackgroundEvent ->
+                    ForegroundEvent.Type.BACKGROUND
 
-                isForegroundEvent -> {
-
-                    if (eventTime >= latestTime) {
-
-                        latestTime = eventTime
-
-                        latestPackage = eventPackage
-                        latestClass = eventClass
-                    }
-                }
-
-                isActivityPausedEvent -> {
-
-                    // A paused activity must not clear a newer resumed activity
-                    // belonging to the same package.
-                    if (
-                        eventTime >= latestTime &&
-                        latestPackage == eventPackage &&
-                        latestClass == eventClass
-                    ) {
-
-                        latestTime = eventTime
-
-                        latestPackage = null
-                        latestClass = null
-                    }
-                }
-
-                isPackageBackgroundEvent -> {
-
-                    if (
-                        eventTime >= latestTime &&
-                        latestPackage == eventPackage &&
-                        latestClass == eventClass
-                    ) {
-
-                        latestTime = eventTime
-
-                        latestPackage = null
-                        latestClass = null
-                    }
-                }
+                else ->
+                    ForegroundEvent.Type.OTHER
             }
+
+            foregroundEvents.add(
+                ForegroundEvent(
+                    packageName = eventPackage,
+                    className = eventClass,
+                    type = mappedType,
+                    timestamp = eventTime
+                )
+            )
         }
 
-        lastForegroundPackage = latestPackage
-        lastForegroundClass = latestClass
+        val resolvedState = ForegroundResolver.resolve(
+            events = foregroundEvents,
+            previous = ForegroundState(
+                packageName = lastForegroundPackage,
+                className = lastForegroundClass
+            )
+        )
 
-        return latestPackage
+        lastForegroundPackage = resolvedState.packageName
+        lastForegroundClass = resolvedState.className
+
+        return resolvedState.packageName
     }
 
 
@@ -1168,19 +1143,6 @@ class UsageMonitorService : Service() {
 
         createOutsideTouchLayer()
     }
-
-    private fun updateReminderCountdownButton() {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post { updateReminderCountdownButton() }
-            return
-        }
-        val button = continueButton ?: return
-        val remainingMs = (reminderContinueAtElapsedRealtimeMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
-        val remainingSeconds = ((remainingMs + 999L) / 1000L).toInt()
-        button.text = if (remainingSeconds > 0) "Continue ($remainingSeconds)" else "Continue"
-        button.isEnabled = remainingMs == 0L
-    }
-
     private fun startReminderCountdown() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post { startReminderCountdown() }
@@ -1190,7 +1152,6 @@ class UsageMonitorService : Service() {
         val runnable = object : Runnable {
             override fun run() {
                 if (activeReminderType == null || interventionOverlay?.isShowing != true) return
-                updateReminderCountdownButton()
                 interventionOverlay?.refreshCountdown()
                 if (SystemClock.elapsedRealtime() < reminderContinueAtElapsedRealtimeMs) {
                     mainHandler.postDelayed(this, 250L)
@@ -1252,43 +1213,7 @@ class UsageMonitorService : Service() {
         }
     }
 
-    private fun applyCardSize(widthDp: Int, heightDp: Int) {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post { applyCardSize(widthDp, heightDp) }
-            return
-        }
 
-        val params = overlayParams ?: return
-        val view = overlayView ?: return
-        val density = resources.displayMetrics.density
-        val margin = (EDGE_MARGIN_DP * density).toInt()
-
-        val screenWidth: Int
-        val screenHeight: Int
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = windowManager.currentWindowMetrics.bounds
-            screenWidth = bounds.width()
-            screenHeight = bounds.height()
-        } else {
-            screenWidth = resources.displayMetrics.widthPixels
-            screenHeight = resources.displayMetrics.heightPixels
-        }
-
-        params.width = min((widthDp * density).toInt(), max(1, screenWidth - margin * 2))
-        params.height = min((heightDp * density).toInt(), max(1, screenHeight - margin * 2))
-
-        val maxX = max(0, screenWidth - params.width - margin)
-        val minX = min(margin, maxX)
-        val maxY = max(0, screenHeight - params.height - margin)
-        val minY = min(margin, maxY)
-        params.x = params.x.coerceIn(minX, maxX)
-        params.y = params.y.coerceIn(minY, maxY)
-
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-        }
-    }
 
     private fun requestInterventionAudioFocus() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
@@ -1363,94 +1288,6 @@ class UsageMonitorService : Service() {
         }
     }
 
-    private fun startTicTacToe() {
-        gameCells = MutableList(9) { "" }
-        gameFinished = false
-        featureStatusView?.text = "Your turn — tap a square (X)."
-        featureActionButton?.text = "Restart Tic-Tac-Toe"
-        featureActionButton?.setOnClickListener { startTicTacToe() }
-        renderGameBoard()
-    }
-
-    private fun renderGameBoard() {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post { renderGameBoard() }
-            return
-        }
-
-        val panel = featurePanel ?: return
-        val density = resources.displayMetrics.density
-        // Allow the board and intervention text to scroll inside the bounded card.
-        featureScrollView?.let { scrollView ->
-            val scrollParams = scrollView.layoutParams as? LinearLayout.LayoutParams
-            if (scrollParams != null) {
-                scrollParams.height = (260 * density).toInt()
-                scrollView.layoutParams = scrollParams
-            }
-        }
-
-        // Remove previous board rows while retaining status and all three action buttons.
-        while (panel.childCount > 4) panel.removeViewAt(4)
-        gameButtons.clear()
-        repeat(3) { rowIndex ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-            }
-            repeat(3) { colIndex ->
-                val index = rowIndex * 3 + colIndex
-                val cell = Button(this).apply {
-                    text = gameCells[index].ifEmpty { "·" }
-                    textSize = 16f
-                    isAllCaps = false
-                    setPadding(0, 0, 0, 0)
-                    setOnClickListener {
-                        if (gameFinished || gameCells[index].isNotEmpty()) return@setOnClickListener
-                        logInterventionCompletedOnce()
-                        gameCells[index] = "X"
-                        if (hasWinner("X")) {
-                            gameFinished = true
-                            featureStatusView?.text = "You win! Nice break."
-                        } else if (gameCells.none { it.isEmpty() }) {
-                            gameFinished = true
-                            featureStatusView?.text = "It's a draw. Take a breath."
-                        } else {
-                            val available = gameCells.indices.filter { gameCells[it].isEmpty() }
-                            gameCells[available.random()] = "O"
-                            if (hasWinner("O")) {
-                                gameFinished = true
-                                featureStatusView?.text = "AppSense wins this round. Try again?"
-                            } else if (gameCells.none { it.isEmpty() }) {
-                                gameFinished = true
-                                featureStatusView?.text = "It's a draw. Try again?"
-                            } else {
-                                featureStatusView?.text = "Your turn — tap a square (X)."
-                            }
-                        }
-                        renderGameBoard()
-                    }
-                }
-                cell.minHeight = (42 * density).toInt()
-                row.addView(cell, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins((2 * density).toInt(), (1 * density).toInt(), (2 * density).toInt(), (1 * density).toInt())
-                })
-                gameButtons.add(cell)
-            }
-            row.minimumHeight = (44 * density).toInt()
-            panel.addView(row, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
-        }
-        applyCardSize(280, 340)
-    }
-
-    private fun hasWinner(mark: String): Boolean {
-        val lines = arrayOf(
-            intArrayOf(0,1,2), intArrayOf(3,4,5), intArrayOf(6,7,8),
-            intArrayOf(0,3,6), intArrayOf(1,4,7), intArrayOf(2,5,8),
-            intArrayOf(0,4,8), intArrayOf(2,4,6)
-        )
-        return lines.any { line -> line.all { gameCells[it] == mark } }
-    }
-
     private fun collapseFloatingTimer() {
 
         interventionOverlay?.dismiss()
@@ -1470,13 +1307,6 @@ class UsageMonitorService : Service() {
         cancelReminderCountdown()
         abandonInterventionAudioFocus()
         activeReminderType = null
-        continueButton = null
-        closeAppButton = null
-        featurePanel = null
-        featureScrollView = null
-        featureStatusView = null
-        featureActionButton = null
-        gameButtons.clear()
 
         val density =
             resources.displayMetrics.density

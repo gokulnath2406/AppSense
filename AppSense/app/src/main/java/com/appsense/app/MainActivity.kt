@@ -1219,7 +1219,7 @@ fun InterventionSettingsScreen(
 
                     SettingsSwitchRow(
                         title = "Breathing exercise",
-                        subtitle = "Allow 10-second breathing resets.",
+                        subtitle = "Allow 30-second breathing resets.",
                         checked = settings.breathingEnabled,
                         onCheckedChange = { enabled ->
 

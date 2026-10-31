@@ -65,21 +65,33 @@ class TicTacToeEngine(
         if (result != Result.IN_PROGRESS) return null
         if (currentTurn != Mark.O) return null
 
-        val move =
-            findWinningMove(Mark.O)
-                ?: findWinningMove(Mark.X)
-                ?: if (board[4] == null) 4 else null
-                    ?: listOf(0, 2, 6, 8)
-                        .filter { board[it] == null }
-                        .shuffled(random)
-                        .firstOrNull()
-                    ?: listOf(1, 3, 5, 7)
-                        .filter { board[it] == null }
-                        .shuffled(random)
-                        .firstOrNull()
-                    ?: return null
+        var move = findWinningMove(Mark.O)
 
-        return if (play(move)) move else null
+        if (move == null) {
+            move = findWinningMove(Mark.X)
+        }
+
+        if (move == null && board[4] == null) {
+            move = 4
+        }
+
+        if (move == null) {
+            move = listOf(0, 2, 6, 8)
+                .filter { board[it] == null }
+                .shuffled(random)
+                .firstOrNull()
+        }
+
+        if (move == null) {
+            move = listOf(1, 3, 5, 7)
+                .filter { board[it] == null }
+                .shuffled(random)
+                .firstOrNull()
+        }
+
+        val selectedMove = move ?: return null
+
+        return if (play(selectedMove)) selectedMove else null
     }
 
     private fun findWinningMove(mark: Mark): Int? {

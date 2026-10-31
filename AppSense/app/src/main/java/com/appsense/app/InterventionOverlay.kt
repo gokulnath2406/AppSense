@@ -584,7 +584,7 @@ class InterventionOverlay(
     }
 
     private fun updateCard(model: Model) {
-        captionView?.text = "${model.minutes} min on ${model.appLabel}"
+        captionView?.text = "${model.minutes} min in your tracked apps"
         closeButton?.text = "Close ${model.appLabel}"
         closeButton?.contentDescription = "Close ${model.appLabel}"
         continueButton?.contentDescription = continueButton?.text?.toString() ?: "Continue"

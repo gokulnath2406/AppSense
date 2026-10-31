@@ -2,6 +2,7 @@ package com.appsense.app
 
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.random.Random
 
 class TicTacToeEngineTest {
 
@@ -166,5 +167,140 @@ class TicTacToeEngineTest {
 
         assertFalse(engine.play(5))
         assertNull(engine.playOpponentMove())
+    }
+    @Test
+    fun opponentMoveMatchesOriginalLogicForAllReachableBoardsAndSeeds() {
+        val totalBoards = 3 * 3 * 3 * 3 * 3 * 3 * 3 * 3 * 3
+
+        for (encoded in 0 until totalBoards) {
+            var value = encoded
+            val board = MutableList<TicTacToeEngine.Mark?>(9) {
+                val mark = when (value % 3) {
+                    1 -> TicTacToeEngine.Mark.X
+                    2 -> TicTacToeEngine.Mark.O
+                    else -> null
+                }
+                value /= 3
+                mark
+            }
+
+            val xCount = board.count { it == TicTacToeEngine.Mark.X }
+            val oCount = board.count { it == TicTacToeEngine.Mark.O }
+
+            if (xCount != oCount + 1) continue
+
+            if (TicTacToeEngine.findWinningLine(
+                    board,
+                    TicTacToeEngine.Mark.X
+                ) != null
+            ) continue
+
+            if (TicTacToeEngine.findWinningLine(
+                    board,
+                    TicTacToeEngine.Mark.O
+                ) != null
+            ) continue
+
+            for (seed in 0..9) {
+                val engine = TicTacToeEngine(Random(seed))
+
+                val xIndices = board.indices.filter {
+                    board[it] == TicTacToeEngine.Mark.X
+                }
+
+                val oIndices = board.indices.filter {
+                    board[it] == TicTacToeEngine.Mark.O
+                }
+
+                for (index in oIndices.indices) {
+                    assertTrue(engine.play(xIndices[index]))
+                    assertTrue(engine.play(oIndices[index]))
+                }
+
+// X always has one extra move.
+                assertTrue(engine.play(xIndices.last()))
+
+                val expected = originalOpponentMove(
+                    board,
+                    Random(seed)
+                )
+
+                assertEquals(
+                    "Mismatch for board=$board, seed=$seed",
+                    expected,
+                    engine.playOpponentMove()
+                )
+            }
+        }
+    }
+
+    @Test
+    fun opponentPrefersCenterWhenFree() {
+        val engine = TicTacToeEngine()
+
+        assertTrue(engine.play(0))
+
+        assertEquals(4, engine.playOpponentMove())
+    }
+
+    @Test
+    fun opponentChoosesCornerWhenCenterIsTaken() {
+        val engine = TicTacToeEngine()
+
+        assertTrue(engine.play(4))
+
+        val move = engine.playOpponentMove()
+
+        assertTrue(move in listOf(0, 2, 6, 8))
+    }
+
+    @Test
+    fun opponentChoosesSideWhenNoCornerIsFree() {
+        val engine = TicTacToeEngine()
+
+        // All four corners and the center are occupied.
+        assertTrue(engine.play(0))
+        assertTrue(engine.play(4))
+        assertTrue(engine.play(2))
+        assertTrue(engine.play(8))
+        assertTrue(engine.play(6))
+
+        val move = engine.playOpponentMove()
+
+        assertTrue(move in listOf(1, 3, 5, 7))
+    }
+
+    private fun originalOpponentMove(
+        board: List<TicTacToeEngine.Mark?>,
+        random: Random
+    ): Int? {
+        fun findWinningMove(
+            mark: TicTacToeEngine.Mark
+        ): Int? {
+            for (index in board.indices) {
+                if (board[index] != null) continue
+
+                val testBoard = board.toMutableList()
+                testBoard[index] = mark
+
+                if (TicTacToeEngine.findWinningLine(testBoard, mark) != null) {
+                    return index
+                }
+            }
+
+            return null
+        }
+
+        return findWinningMove(TicTacToeEngine.Mark.O)
+            ?: findWinningMove(TicTacToeEngine.Mark.X)
+            ?: if (board[4] == null) 4 else null
+                ?: listOf(0, 2, 6, 8)
+                    .filter { board[it] == null }
+                    .shuffled(random)
+                    .firstOrNull()
+                ?: listOf(1, 3, 5, 7)
+                    .filter { board[it] == null }
+                    .shuffled(random)
+                    .firstOrNull()
     }
 }
