@@ -23,6 +23,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
+import android.widget.Toast
 import android.widget.TextView
 import android.widget.Button
 import android.widget.ScrollView
@@ -42,6 +43,10 @@ class UsageMonitorService : Service() {
         private const val POLL_INTERVAL = 1000L
         // Rebuild today's event history less often than the UI timer refreshes.
         private const val USAGE_TOTAL_REFRESH_INTERVAL = 30_000L
+
+        // PAUSED(old activity) is reported a moment before RESUMED(new activity).
+        // Do not treat that short gap as "left the tracked app".
+        private const val FOREGROUND_GAP_TOLERANCE_MS = 2_500L
 
         private const val BOX_HEIGHT_DP = 36
         private const val EDGE_MARGIN_DP = 6
@@ -70,6 +75,8 @@ class UsageMonitorService : Service() {
 
     private var lastForegroundPackage: String? = null
     private var lastForegroundClass: String? = null
+    private var lastTrackedForegroundPackage: String? = null
+    private var lastTrackedForegroundAtElapsed: Long = 0L
 
     // Cache today's full event-history calculation. The visible session timer still
     // refreshes every second; only the more expensive daily total is refreshed every 30s.
@@ -102,7 +109,6 @@ class UsageMonitorService : Service() {
     private var interventionAudioManager: AudioManager? = null
     private var interventionAudioFocusRequest: AudioFocusRequest? = null
     private var interventionAudioFocusHeld = false
-    private var breathingStep = 0
     private var gameCells = MutableList(9) { "" }
     private var gameFinished = false
     private var featurePanel: LinearLayout? = null
@@ -216,21 +222,43 @@ class UsageMonitorService : Service() {
         if (!screenOn) {
             lastForegroundPackage = null
             lastForegroundClass = null
+            lastTrackedForegroundPackage = null
             isForegroundStateInitialized = false
         }
 
-        val foregroundPackage =
+        val nowElapsedRealtime = SystemClock.elapsedRealtime()
+
+        val rawForegroundPackage =
             if (screenOn && overlayAllowed && selectedApps.isNotEmpty()) {
                 getCurrentForegroundApp()
             } else {
                 null
             }
 
+        if (rawForegroundPackage != null && selectedApps.contains(rawForegroundPackage)) {
+            lastTrackedForegroundPackage = rawForegroundPackage
+            lastTrackedForegroundAtElapsed = nowElapsedRealtime
+        }
+
+        // Bridge only the short "no package reported" gap of an activity change. A real switch to
+        // another app reports that app's package, so it is never bridged.
+        val foregroundPackage =
+            if (
+                rawForegroundPackage == null &&
+                screenOn &&
+                overlayAllowed &&
+                selectedApps.isNotEmpty() &&
+                lastTrackedForegroundPackage != null &&
+                nowElapsedRealtime - lastTrackedForegroundAtElapsed <= FOREGROUND_GAP_TOLERANCE_MS
+            ) {
+                lastTrackedForegroundPackage
+            } else {
+                rawForegroundPackage
+            }
+
         val trackedAppInForeground =
             foregroundPackage != null &&
                     selectedApps.contains(foregroundPackage)
-
-        val nowElapsedRealtime = SystemClock.elapsedRealtime()
 
         // Invalid monitoring conditions terminate the session immediately.
         val monitoringAllowed =
@@ -471,7 +499,13 @@ class UsageMonitorService : Service() {
                 )
 
                 if (!overlay.isShowing) {
+                    // The overlay window could not be added. Do not leave a phantom active
+                    // intervention that suppresses every later reminder. The next attempt is
+                    // already scheduled by nextReminderElapsedMs / remindersInSession.
                     abandonInterventionAudioFocus()
+                    cancelReminderCountdown()
+                    activeReminderType = null
+                    return@post
                 }
 
                 if (reminderType == "breathing") {
@@ -1133,107 +1167,6 @@ class UsageMonitorService : Service() {
         }
 
         createOutsideTouchLayer()
-        if (activeReminderType != null) renderReminderPanel()
-    }
-
-    private fun renderReminderPanel() {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post { renderReminderPanel() }
-            return
-        }
-
-        val view = overlayView ?: return
-        if (overlayParams == null) return
-        val type = activeReminderType ?: return
-        if (!isExpanded) return
-
-        // Rebuild only the optional intervention area; the timer and usage rows stay intact.
-        while (view.childCount > 3) view.removeViewAt(3)
-        featurePanel = null
-        featureScrollView = null
-        featureStatusView = null
-        featureActionButton = null
-        continueButton = null
-        closeAppButton = null
-        cancelReminderCountdown()
-        gameButtons.clear()
-
-        val density = resources.displayMetrics.density
-        val reminderMinutes = (reminderElapsedMs / 60_000L).toInt()
-        val minuteLabel = if (reminderMinutes == 1) "minute" else "minutes"
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding((4 * density).toInt(), (3 * density).toInt(), (4 * density).toInt(), (3 * density).toInt())
-        }
-        val status = TextView(this).apply {
-            text = if (type == "breathing") "$reminderMinutes $minuteLabel in this session. Take a 10-second reset." else "$reminderMinutes $minuteLabel in this session. Take a quick play break."
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            maxLines = 3
-        }
-        val action = Button(this).apply {
-            text = when (type) {
-                "breathing" -> "Start breathing"
-                else -> if (gameCells.any { it.isNotEmpty() }) "Restart Tic-Tac-Toe" else "Play Tic-Tac-Toe"
-            }
-            textSize = 11f
-            isAllCaps = false
-            setOnClickListener {
-                if (type == "breathing") startBreathingExercise() else startTicTacToe()
-            }
-        }
-        status.minHeight = (42 * density).toInt()
-        action.minHeight = (42 * density).toInt()
-        panel.addView(status, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
-        panel.addView(action, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
-
-        val continueAction = Button(this).apply {
-            isAllCaps = false
-            setOnClickListener {
-                if (SystemClock.elapsedRealtime() >= reminderContinueAtElapsedRealtimeMs) {
-                    logInterventionDismissedOnce()
-                    activeReminderType = null
-                    abandonInterventionAudioFocus()
-                    cancelBreathingExercise()
-                    cancelReminderCountdown()
-                    collapseFloatingTimer()
-                }
-            }
-        }
-        val closeAppAction = Button(this).apply {
-            text = "Close app"
-            isAllCaps = false
-            setOnClickListener { closeCurrentAppToHome() }
-        }
-        panel.addView(continueAction, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
-        panel.addView(closeAppAction, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
-
-        // Keep the intervention content scrollable when the display or font scale is constrained.
-        val scrollView = ScrollView(this).apply {
-            isFillViewport = true
-            clipToPadding = false
-            addView(panel, -1, -2)
-        }
-        val scrollHeightDp = if (type == "game" && gameCells.any { it.isNotEmpty() }) 260 else 180
-        view.addView(scrollView, LinearLayout.LayoutParams(-1, (scrollHeightDp * density).toInt()))
-        featurePanel = panel
-        featureScrollView = scrollView
-        featureStatusView = status
-        featureActionButton = action
-        continueButton = continueAction
-        closeAppButton = closeAppAction
-        updateReminderCountdownButton()
-        startReminderCountdown()
-
-        // The intervention card grows only while a prompt/game is active.
-        applyCardSize(
-            280,
-            if (type == "game" && gameCells.any { it.isNotEmpty() }) 430 else 350
-        )
-
-        if (type == "game" && gameCells.any { it.isNotEmpty() }) renderGameBoard()
     }
 
     private fun updateReminderCountdownButton() {
@@ -1291,7 +1224,11 @@ class UsageMonitorService : Service() {
             cancelReminderCountdown()
             collapseFloatingTimer()
         } catch (_: Exception) {
-            featureStatusView?.text = "Couldn't open Home automatically. Press your phone's Home button."
+            Toast.makeText(
+                applicationContext,
+                "Couldn't open Home automatically. Press your phone's Home button.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
@@ -1398,34 +1335,6 @@ class UsageMonitorService : Service() {
         interventionAudioManager = null
     }
 
-    private fun startBreathingExercise() {
-        cancelBreathingExercise()
-        breathingStep = 0
-        featureActionButton?.text = "Breathing…"
-        runBreathingStep()
-    }
-
-    private fun runBreathingStep() {
-        val status = featureStatusView ?: return
-        val messages = listOf("Breathe in slowly…", "Breathe out slowly…")
-        if (breathingStep >= 2) {
-            status.text = "Reset complete. Ready to continue?"
-            featureActionButton?.text = "Done"
-            featureActionButton?.setOnClickListener {
-                logInterventionCompletedOnce()
-                activeReminderType = null
-                cancelReminderCountdown()
-                updateOutsideTouchLayerTouchability()
-                collapseFloatingTimer()
-            }
-            return
-        }
-        status.text = messages[breathingStep]
-        breathingStep++
-        val runnable = Runnable { runBreathingStep() }
-        breathingRunnable = runnable
-        mainHandler.postDelayed(runnable, 5_000L)
-    }
 
     private fun cancelBreathingExercise() {
         breathingRunnable?.let { mainHandler.removeCallbacks(it) }

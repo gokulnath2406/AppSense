@@ -20,6 +20,7 @@ import android.view.animation.LinearInterpolator
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import android.provider.Settings
 
 class TicTacToeView(
     context: Context,
@@ -30,6 +31,13 @@ class TicTacToeView(
     private val engine = TicTacToeEngine()
     private val handler = Handler(Looper.getMainLooper())
     private val density = resources.displayMetrics.density
+
+    private fun spToPx(value: Float): Float =
+        android.util.TypedValue.applyDimension(
+            android.util.TypedValue.COMPLEX_UNIT_SP,
+            value,
+            resources.displayMetrics
+        )
     private val gap = dp(8f)
     private val cornerRadius = dp(14f)
 
@@ -45,6 +53,7 @@ class TicTacToeView(
     private var hoveredVirtualViewId = INVALID_VIRTUAL_VIEW_ID
 
     private val inputGuardRefreshRunnable = Runnable { invalidate() }
+    private val cellRect = RectF()
 
     private data class BoardLayout(
         val left: Float,
@@ -86,7 +95,7 @@ class TicTacToeView(
 
     private val buttonTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = InterventionTheme.PRIMARY_TEXT_COLOR
-        textSize = 14f * resources.displayMetrics.scaledDensity
+        textSize = spToPx(14f)
         textAlign = Paint.Align.CENTER
         typeface = android.graphics.Typeface.DEFAULT_BOLD
     }
@@ -407,11 +416,17 @@ class TicTacToeView(
         val cells = engine.cells
 
         for (index in 0..8) {
-            val rect = RectF(cellBounds(index, layout))
-            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fillPaint)
+            val bounds = cellBounds(index, layout)
+            cellRect.set(
+                bounds.left.toFloat(),
+                bounds.top.toFloat(),
+                bounds.right.toFloat(),
+                bounds.bottom.toFloat()
+            )
+            canvas.drawRoundRect(cellRect, cornerRadius, cornerRadius, fillPaint)
             when (cells[index]) {
-                TicTacToeEngine.Mark.X -> drawX(canvas, rect)
-                TicTacToeEngine.Mark.O -> drawO(canvas, rect)
+                TicTacToeEngine.Mark.X -> drawX(canvas, cellRect)
+                TicTacToeEngine.Mark.O -> drawO(canvas, cellRect)
                 null -> Unit
             }
         }
@@ -539,6 +554,24 @@ class TicTacToeView(
 
     private fun animateWinningLine() {
         winningAnimator?.cancel()
+
+        val animationDisabled = try {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        } catch (_: Exception) {
+            false
+        }
+
+        if (animationDisabled) {
+            winningProgress = 1f
+            winningAnimator = null
+            invalidate()
+            return
+        }
+
         winningProgress = 0f
         winningAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 200L

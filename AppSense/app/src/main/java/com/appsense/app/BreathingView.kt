@@ -30,9 +30,15 @@ class BreathingView(
     }
 
     private val density = resources.displayMetrics.density
+    private fun spToPx(value: Float): Float =
+        android.util.TypedValue.applyDimension(
+            android.util.TypedValue.COMPLEX_UNIT_SP,
+            value,
+            resources.displayMetrics
+        )
     private val phasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = InterventionTheme.BREATHING_PHASE_TEXT_COLOR
-        textSize = InterventionTheme.BREATHING_PHASE_TEXT_SIZE_SP * resources.displayMetrics.scaledDensity
+        textSize = spToPx(InterventionTheme.BREATHING_PHASE_TEXT_SIZE_SP)
         textAlign = Paint.Align.CENTER
         typeface = android.graphics.Typeface.create(
             android.graphics.Typeface.DEFAULT,
@@ -41,12 +47,12 @@ class BreathingView(
     }
     private val countdownPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = InterventionTheme.BREATHING_COUNTDOWN_TEXT_COLOR
-        textSize = InterventionTheme.BREATHING_COUNTDOWN_TEXT_SIZE_SP * resources.displayMetrics.scaledDensity
+        textSize = spToPx(InterventionTheme.BREATHING_COUNTDOWN_TEXT_SIZE_SP)
         textAlign = Paint.Align.CENTER
     }
     private val skipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = InterventionTheme.SECONDARY_TEXT_COLOR
-        textSize = InterventionTheme.BREATHING_SKIP_TEXT_SIZE_SP * resources.displayMetrics.scaledDensity
+        textSize = spToPx(InterventionTheme.BREATHING_SKIP_TEXT_SIZE_SP)
         textAlign = Paint.Align.CENTER
     }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -180,7 +186,7 @@ class BreathingView(
         super.onDraw(canvas)
 
         if (phase == Phase.FINISHED) {
-            phasePaint.textSize = InterventionTheme.BREATHING_FINISHED_TEXT_SIZE_SP * resources.displayMetrics.scaledDensity
+            phasePaint.textSize = spToPx(InterventionTheme.BREATHING_FINISHED_TEXT_SIZE_SP)
             canvas.drawText(
                 "Nice. Take your time.",
                 width / 2f,
@@ -196,7 +202,7 @@ class BreathingView(
             val maxRadius = min(width * 0.23f, height * 0.23f)
             canvas.drawCircle(centerX, centerY, maxRadius * InterventionTheme.BREATHING_MIN_SCALE, fillPaint)
             canvas.drawCircle(centerX, centerY, maxRadius * InterventionTheme.BREATHING_MIN_SCALE, ringPaint)
-            phasePaint.textSize = InterventionTheme.BREATHING_PHASE_TEXT_SIZE_SP * resources.displayMetrics.scaledDensity
+            phasePaint.textSize = spToPx(InterventionTheme.BREATHING_PHASE_TEXT_SIZE_SP)
             canvas.drawText(
                 "Get ready to relax",
                 centerX,
