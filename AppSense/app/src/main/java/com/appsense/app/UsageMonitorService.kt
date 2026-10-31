@@ -329,6 +329,11 @@ class UsageMonitorService : Service() {
             // Temporary untracked foreground:
             // Keep the pill and active intervention alive during grace.
             if (!trackedAppInForeground) {
+                // Another app (Home, WhatsApp...) really is in front: end the intervention now.
+                // A null package is only the short gap of an activity change: keep the card.
+                if (foregroundPackage != null) {
+                    resetInterventionUi()
+                }
                 hideFloatingTimer()
                 return@post
             }
