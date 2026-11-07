@@ -193,11 +193,11 @@ object AppSenseUsageCalculator {
             packageStart = null
         }
 
-        // Process events chronologically within the requested day.
+        // Include previous-day events to reconstruct sessions crossing midnight.
         val orderedEvents = events
             .asSequence()
             .filter {
-                it.timestamp >= dayStart &&
+                it.timestamp >= (dayStart - MAX_INTERVAL_MILLIS).coerceAtLeast(0L) &&
                         it.timestamp <= dayEnd
             }
             .sortedBy { it.timestamp }
@@ -259,8 +259,12 @@ object AppSenseUsageCalculator {
             }
         }
 
-        // Close any session still active at the query end.
-        if (activeActivities.isNotEmpty()) {
+        // Close sessions still active at query end only when they started today.
+// An orphaned previous-day foreground event must not inflate today's usage.
+        if (
+            activeActivities.isNotEmpty() &&
+            (packageStart ?: Long.MIN_VALUE) >= dayStart
+        ) {
             closeSession(dayEnd)
         }
 
@@ -306,5 +310,92 @@ object AppSenseUsageCalculator {
         )
 
         return merged
+    }
+    fun getIntervalsForPackages(
+        context: Context,
+        packageNames: Set<String>,
+        dayStart: Long,
+        dayEnd: Long,
+        mergeGapMs: Long = 0L
+    ): Map<String, List<AppUsageInterval>> {
+
+        if (packageNames.isEmpty() || dayEnd <= dayStart) {
+            return emptyMap()
+        }
+
+        val queryStart = (dayStart - LOOKBACK_MILLIS).coerceAtLeast(0L)
+
+        val manager = context.getSystemService(Context.USAGE_STATS_SERVICE)
+                as? UsageStatsManager
+            ?: return packageNames.associateWith { emptyList() }
+
+        // One UsageStatsManager query for all selected apps.
+        val usageEvents = manager.queryEvents(queryStart, dayEnd)
+            ?: return packageNames.associateWith { emptyList() }
+
+        val rawEvents = mutableListOf<RawEvent>()
+        val event = UsageEvents.Event()
+
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+
+            val rawType = when (event.eventType) {
+                UsageEvents.Event.MOVE_TO_FOREGROUND ->
+                    RawEventType.RESUMED
+
+                UsageEvents.Event.MOVE_TO_BACKGROUND ->
+                    RawEventType.PAUSED
+
+                else -> {
+                    when {
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType == UsageEvents.Event.ACTIVITY_RESUMED ->
+                            RawEventType.RESUMED
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType == UsageEvents.Event.ACTIVITY_PAUSED ->
+                            RawEventType.PAUSED
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType == UsageEvents.Event.ACTIVITY_STOPPED ->
+                            RawEventType.STOPPED
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                                event.eventType == UsageEvents.Event.SCREEN_NON_INTERACTIVE ->
+                            RawEventType.SCREEN_OFF
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                                event.eventType == UsageEvents.Event.KEYGUARD_SHOWN ->
+                            RawEventType.KEYGUARD_SHOWN
+
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                                event.eventType == UsageEvents.Event.DEVICE_SHUTDOWN ->
+                            RawEventType.DEVICE_SHUTDOWN
+
+                        else -> RawEventType.OTHER
+                    }
+                }
+            }
+
+            rawEvents.add(
+                RawEvent(
+                    packageName = event.packageName.orEmpty(),
+                    className = event.className,
+                    type = rawType,
+                    timestamp = event.timeStamp
+                )
+            )
+        }
+
+        // Reuse the same event snapshot for every selected package.
+        return packageNames.associateWith { packageName ->
+            getIntervals(
+                events = rawEvents,
+                packageName = packageName,
+                dayStart = dayStart,
+                dayEnd = dayEnd,
+                mergeGapMs = mergeGapMs
+            )
+        }
     }
 }

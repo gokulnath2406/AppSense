@@ -31,6 +31,9 @@ import android.content.pm.ServiceInfo
 import java.util.Calendar
 import kotlin.math.max
 import kotlin.math.min
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 
 class UsageMonitorService : Service() {
 
@@ -62,6 +65,34 @@ class UsageMonitorService : Service() {
 
     @Volatile
     private var isMonitoring = false
+
+    @Volatile
+    private var isScreenInteractive = true
+
+    private val screenStateLock = Object()
+
+    private var screenReceiverRegistered = false
+
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenInteractive = false
+                }
+
+                Intent.ACTION_SCREEN_ON,
+                Intent.ACTION_USER_PRESENT -> {
+                    isScreenInteractive = true
+                }
+            }
+
+            synchronized(screenStateLock) {
+                screenStateLock.notifyAll()
+            }
+
+            monitoringThread?.interrupt()
+        }
+    }
 
     private lateinit var windowManager: WindowManager
     private var overlayView: LinearLayout? = null
@@ -154,7 +185,6 @@ class UsageMonitorService : Service() {
             stopSelf()
             return
         }
-
         createFloatingTimer()
         startMonitoring()
     }
@@ -171,25 +201,48 @@ class UsageMonitorService : Service() {
 
         if (isMonitoring) return
 
+        isScreenInteractive =
+            (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
+
         isMonitoring = true
 
         monitoringThread = Thread {
 
-            while (isMonitoring) {
+            var screenOffStateProcessed = false
 
+            while (isMonitoring) {
                 try {
+                    if (!isScreenInteractive) {
+
+                        // Process screen-off state only once.
+                        if (!screenOffStateProcessed) {
+                            updateFloatingTimer()
+                            screenOffStateProcessed = true
+                        }
+
+                        // Wait without polling until the screen becomes interactive.
+                        synchronized(screenStateLock) {
+                            while (isMonitoring && !isScreenInteractive) {
+                                screenStateLock.wait()
+                            }
+                        }
+
+                        continue
+                    }
+
+                    screenOffStateProcessed = false
 
                     updateFloatingTimer()
 
                     Thread.sleep(POLL_INTERVAL)
 
                 } catch (_: InterruptedException) {
-                    break
+                    if (!isMonitoring) break
                 } catch (_: Exception) {
-                    // Keep monitoring alive if a single usage/overlay
-                    // update fails.
+                    // Keep monitoring alive if a single update fails.
                 }
             }
+
         }.apply {
             name = "AppSenseUsageMonitor"
             start()
@@ -704,6 +757,24 @@ class UsageMonitorService : Service() {
 
 
     private fun createFloatingTimer() {
+        val screenFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                screenStateReceiver,
+                screenFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            registerReceiver(screenStateReceiver, screenFilter)
+        }
+
+        screenReceiverRegistered = true
+
 
         if (overlayView != null) return
 
@@ -1627,6 +1698,25 @@ class UsageMonitorService : Service() {
         abandonInterventionAudioFocus()
         interventionOverlay?.dismiss()
         isMonitoring = false
+
+        synchronized(screenStateLock) {
+            screenStateLock.notifyAll()
+        }
+
+        if (screenReceiverRegistered) {
+            try {
+                unregisterReceiver(screenStateReceiver)
+            } catch (_: Exception) {
+                // Receiver may already be unregistered.
+            }
+
+            screenReceiverRegistered = false
+        }
+
+        cancelBreathingExercise()
+
+        monitoringThread?.interrupt()
+        monitoringThread = null
         cancelBreathingExercise()
 
         monitoringThread?.interrupt()

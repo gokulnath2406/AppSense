@@ -303,4 +303,35 @@ class TicTacToeEngineTest {
                     .shuffled(random)
                     .firstOrNull()
     }
+    @Test
+    fun humanCannotPlayDuringOpponentTurn() {
+        val engine = TicTacToeEngine()
+
+        assertTrue(engine.playHumanMove(0))
+
+        assertEquals(
+            TicTacToeEngine.Mark.O,
+            engine.currentTurn
+        )
+
+        val boardBefore = engine.cells
+
+        assertFalse(engine.playHumanMove(1))
+
+        assertEquals(boardBefore, engine.cells)
+
+        assertEquals(
+            TicTacToeEngine.Mark.O,
+            engine.currentTurn
+        )
+
+        assertNotNull(engine.playOpponentMove())
+
+        assertEquals(
+            TicTacToeEngine.Mark.X,
+            engine.currentTurn
+        )
+
+        assertTrue(engine.playHumanMove(1))
+    }
 }

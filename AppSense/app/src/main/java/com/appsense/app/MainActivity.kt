@@ -405,7 +405,75 @@ private data class DashboardHourlyAppUsage(
     val color: Color,
     val hourlyUsage: LongArray
 )
+private data class DashboardUsageSnapshot(
+    val totalUsage: Long,
+    val hourlyApps: List<DashboardHourlyAppUsage>
+)
 
+private fun getDashboardUsageSnapshot(
+    context: Context,
+    packageNames: Set<String>,
+    date: Calendar
+): DashboardUsageSnapshot {
+
+    if (packageNames.isEmpty()) {
+        return DashboardUsageSnapshot(
+            totalUsage = 0L,
+            hourlyApps = emptyList()
+        )
+    }
+
+    val dayStart = getDayStart(date)
+    val dayEnd = minOf(getDayEnd(date), System.currentTimeMillis())
+
+    if (dayEnd <= dayStart) {
+        return DashboardUsageSnapshot(
+            totalUsage = 0L,
+            hourlyApps = emptyList()
+        )
+    }
+
+    val intervalsByPackage =
+        AppSenseUsageCalculator.getIntervalsForPackages(
+            context = context,
+            packageNames = packageNames,
+            dayStart = dayStart,
+            dayEnd = dayEnd
+        )
+
+    val labelsByPackage =
+        getInstalledApps(context).associateBy { it.packageName }
+
+    val totalUsage = intervalsByPackage.values.sumOf { intervals ->
+        intervals.sumOf { it.endTime - it.startTime }
+    }
+
+    val hourlyApps = packageNames.map { packageName ->
+        val buckets = LongArray(24)
+
+        intervalsByPackage[packageName].orEmpty().forEach { interval ->
+            addDashboardIntervalToHours(
+                buckets = buckets,
+                dayStart = dayStart,
+                dayEnd = dayEnd,
+                startTime = interval.startTime,
+                endTime = interval.endTime
+            )
+        }
+
+        DashboardHourlyAppUsage(
+            packageName = packageName,
+            appName = labelsByPackage[packageName]?.name ?: packageName,
+            color = getDashboardAppColor(packageName),
+            hourlyUsage = buckets
+        )
+    }
+
+    return DashboardUsageSnapshot(
+        totalUsage = totalUsage,
+        hourlyApps = hourlyApps
+    )
+}
 private fun getDashboardAppColor(packageName: String): Color {
     val palette = listOf(
         Color(0xFF1769E0),
@@ -1920,37 +1988,26 @@ fun DashboardScreen(
         }
     }
 
-    val totalUsage by produceState(
-        initialValue = 0L,
+    val dashboardSnapshot by produceState(
+        initialValue = DashboardUsageSnapshot(
+            totalUsage = 0L,
+            hourlyApps = emptyList()
+        ),
         key1 = selectedApps,
         key2 = dashboardRefreshTick,
         key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
     ) {
         value = withContext(Dispatchers.IO) {
-            selectedApps.sumOf { packageName ->
-                getAppUsageForDate(
-                    context,
-                    packageName,
-                    today
-                )
-            }
-        }
-    }
-
-    val dashboardHourlyData by produceState(
-        initialValue = emptyList<DashboardHourlyAppUsage>(),
-        key1 = selectedApps,
-        key2 = dashboardRefreshTick,
-        key3 = today.get(Calendar.YEAR) to today.get(Calendar.DAY_OF_YEAR)
-    ) {
-        value = withContext(Dispatchers.IO) {
-            getDashboardHourlyUsage(
-                context,
-                selectedApps,
-                today
+            getDashboardUsageSnapshot(
+                context = context,
+                packageNames = selectedApps,
+                date = today
             )
         }
     }
+
+    val totalUsage = dashboardSnapshot.totalUsage
+    val dashboardHourlyData = dashboardSnapshot.hourlyApps
 
     val dateText = remember(today) {
         SimpleDateFormat(
@@ -2891,6 +2948,23 @@ fun AddedAppStatsScreen(
         remember(refresh) {
             Calendar.getInstance()
         }
+
+    val lifecycleOwner =
+        androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refresh++
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     Column(
         modifier = Modifier

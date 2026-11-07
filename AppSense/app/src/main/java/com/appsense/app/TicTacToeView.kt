@@ -46,6 +46,7 @@ class TicTacToeView(
     private var winningAnimator: ValueAnimator? = null
     private var inputGuardUntilElapsedRealtimeMs = 0L
     private var inputBlocked = false
+    private var opponentMovePending = false
     private var currentStatus = "Your move"
     private var lastStatusAnnouncementAt = Long.MIN_VALUE
     private var lastAnnouncedStatus: String? = null
@@ -122,8 +123,7 @@ class TicTacToeView(
                     TicTacToeEngine.Mark.O -> "O"
                     null -> "empty"
                 }
-                val enabled = !isInputGuardActive() &&
-                        engine.result == TicTacToeEngine.Result.IN_PROGRESS && mark == null
+                val enabled = canHumanPlay() && mark == null
 
                 return AccessibilityNodeInfo.obtain().apply {
                     setSource(this@TicTacToeView, virtualViewId)
@@ -195,7 +195,10 @@ class TicTacToeView(
             if (action != AccessibilityNodeInfo.ACTION_CLICK || isInputGuardActive()) return false
 
             return when (virtualViewId) {
-                in 0..8 -> playCell(virtualViewId)
+                in 0..8 -> {
+                    if (!canHumanPlay()) false
+                    else playCell(virtualViewId)
+                }
                 PLAY_AGAIN_VIRTUAL_ID -> {
                     if (engine.result == TicTacToeEngine.Result.IN_PROGRESS) false
                     else {
@@ -209,19 +212,32 @@ class TicTacToeView(
     }
 
     private val opponentRunnable = Runnable {
-        if (inputBlocked || engine.result != TicTacToeEngine.Result.IN_PROGRESS) {
+
+        opponentMovePending = false
+
+        if (
+            inputBlocked ||
+            engine.result != TicTacToeEngine.Result.IN_PROGRESS ||
+            engine.currentTurn != TicTacToeEngine.Mark.O
+        ) {
+            invalidate()
+            notifyAccessibilityContentChanged()
             return@Runnable
         }
 
         engine.playOpponentMove()
+
         when (engine.result) {
             TicTacToeEngine.Result.O_WINS -> {
                 updateStatus("I win this one")
                 animateWinningLine()
             }
+
             TicTacToeEngine.Result.DRAW -> updateStatus("Draw")
+
             else -> updateStatus("Your move")
         }
+
         invalidate()
         notifyAccessibilityContentChanged()
     }
@@ -248,13 +264,29 @@ class TicTacToeView(
 
     override fun setInputBlocked(blocked: Boolean) {
         inputBlocked = blocked
-        if (blocked) handler.removeCallbacks(opponentRunnable)
+
+        if (blocked) {
+            handler.removeCallbacks(opponentRunnable)
+            opponentMovePending = false
+        } else if (
+            engine.currentTurn == TicTacToeEngine.Mark.O &&
+            engine.result == TicTacToeEngine.Result.IN_PROGRESS
+        ) {
+            scheduleOpponentMove()
+        }
+
         invalidate()
         notifyAccessibilityContentChanged()
     }
 
     private fun isInputGuardActive(): Boolean =
         inputBlocked || SystemClock.elapsedRealtime() < inputGuardUntilElapsedRealtimeMs
+
+    private fun canHumanPlay(): Boolean =
+        !isInputGuardActive() &&
+                !opponentMovePending &&
+                engine.currentTurn == TicTacToeEngine.Mark.X &&
+                engine.result == TicTacToeEngine.Result.IN_PROGRESS
 
     private fun dp(value: Float): Float = value * density
 
@@ -527,8 +559,26 @@ class TicTacToeView(
         return true
     }
 
+    private fun scheduleOpponentMove() {
+        if (
+            opponentMovePending ||
+            engine.currentTurn != TicTacToeEngine.Mark.O ||
+            engine.result != TicTacToeEngine.Result.IN_PROGRESS
+        ) {
+            return
+        }
+
+        opponentMovePending = true
+
+        handler.removeCallbacks(opponentRunnable)
+        handler.postDelayed(opponentRunnable, 350L)
+    }
+
     private fun playCell(index: Int): Boolean {
-        if (isInputGuardActive() || !engine.play(index)) return false
+
+        if (!canHumanPlay() || !engine.playHumanMove(index)) {
+            return false
+        }
 
         if (!firstMoveLogged) {
             firstMoveLogged = true
@@ -536,19 +586,23 @@ class TicTacToeView(
         }
 
         when (engine.result) {
+
             TicTacToeEngine.Result.X_WINS -> {
                 updateStatus("You win")
                 animateWinningLine()
             }
+
             TicTacToeEngine.Result.DRAW -> updateStatus("Draw")
+
             else -> {
                 updateStatus("My move...")
-                handler.removeCallbacks(opponentRunnable)
-                handler.postDelayed(opponentRunnable, 350L)
+                scheduleOpponentMove()
             }
         }
+
         invalidate()
         notifyAccessibilityContentChanged()
+
         return true
     }
 
@@ -586,6 +640,7 @@ class TicTacToeView(
 
     private fun resetGame() {
         handler.removeCallbacks(opponentRunnable)
+        opponentMovePending = false
         winningAnimator?.cancel()
         engine.reset()
         firstMoveLogged = false

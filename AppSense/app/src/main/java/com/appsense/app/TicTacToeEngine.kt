@@ -61,6 +61,11 @@ class TicTacToeEngine(
         return true
     }
 
+    fun playHumanMove(index: Int): Boolean {
+        if (currentTurn != Mark.X) return false
+        return play(index)
+    }
+
     fun playOpponentMove(): Int? {
         if (result != Result.IN_PROGRESS) return null
         if (currentTurn != Mark.O) return null
