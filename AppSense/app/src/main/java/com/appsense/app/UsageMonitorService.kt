@@ -562,13 +562,17 @@ class UsageMonitorService : Service() {
                 if (reminderType == "breathing") {
 
                     overlay.setContent(
-                        BreathingView(this) { _ ->
+                        BreathingView(this) { completedFully ->
 
                             if (
                                 activeReminderType == "breathing" &&
                                 interventionOverlay?.isShowing == true
                             ) {
-                                logInterventionCompletedOnce()
+                                if (completedFully) {
+                                    logInterventionCompletedOnce()
+                                } else {
+                                    logInterventionDismissedOnce()
+                                }
                             }
 
                             abandonInterventionAudioFocus()

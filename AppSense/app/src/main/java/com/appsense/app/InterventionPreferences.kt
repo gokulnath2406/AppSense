@@ -2,9 +2,8 @@ package com.appsense.app
 
 import android.content.Context
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 
 private const val APPSENSE_PREFERENCES = "appsense_preferences"
 
@@ -53,8 +52,12 @@ object InterventionPreferences {
     }
 }
 
+
+
 object InterventionDailyLogStore {
-    private fun todayKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    private const val RETENTION_DAYS = 30L
+
+    private fun todayKey(): String = LocalDate.now().toString()
 
     fun today(context: Context): InterventionDailyLog = read(context, todayKey())
 
@@ -63,8 +66,11 @@ object InterventionDailyLogStore {
     fun recordDismissed(context: Context) = increment(context, "dismissed")
 
     private fun read(context: Context, key: String): InterventionDailyLog {
-        val raw = context.getSharedPreferences(APPSENSE_PREFERENCES, Context.MODE_PRIVATE)
-            .getString(key, null) ?: return InterventionDailyLog()
+        val raw = context.getSharedPreferences(
+            APPSENSE_PREFERENCES,
+            Context.MODE_PRIVATE
+        ).getString(key, null) ?: return InterventionDailyLog()
+
         return try {
             val json = JSONObject(raw)
             InterventionDailyLog(
@@ -78,15 +84,44 @@ object InterventionDailyLogStore {
     }
 
     private fun increment(context: Context, field: String) {
-        val prefs = context.getSharedPreferences(APPSENSE_PREFERENCES, Context.MODE_PRIVATE)
-        val key = todayKey()
+        val prefs = context.getSharedPreferences(
+            APPSENSE_PREFERENCES,
+            Context.MODE_PRIVATE
+        )
+
+        val today = LocalDate.now()
+        val key = today.toString()
+
         val current = try {
             JSONObject(prefs.getString(key, "{}") ?: "{}")
         } catch (_: Exception) {
             JSONObject()
         }
+
         current.put(field, current.optInt(field, 0) + 1)
-        // The yyyy-MM-dd date itself is the preference key, as requested.
-        prefs.edit().putString(key, current.toString()).apply()
+
+        val editor = prefs.edit()
+
+        keysOlderThan(prefs.all.keys, today).forEach { oldKey ->
+            editor.remove(oldKey)
+        }
+
+        editor.putString(key, current.toString()).apply()
+    }
+
+    internal fun keysOlderThan(
+        allKeys: Set<String>,
+        today: LocalDate,
+        retentionDays: Long = RETENTION_DAYS
+    ): Set<String> {
+        val cutoffDate = today.minusDays(retentionDays)
+
+        return allKeys.filter { key ->
+            try {
+                LocalDate.parse(key).isBefore(cutoffDate)
+            } catch (_: DateTimeParseException) {
+                false
+            }
+        }.toSet()
     }
 }

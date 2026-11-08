@@ -397,24 +397,28 @@ class InterventionOverlay(
             mainHandler.post { setContent(view) }
             return
         }
+
         val frame = contentFrame ?: return
         frame.removeAllViews()
+
         val frameParams = frame.layoutParams as? FrameLayout.LayoutParams
         if (frameParams != null) {
             frameParams.height = if (view != null) {
-                dp(InterventionTheme.BREATHING_CONTENT_HEIGHT_DP)
+                FrameLayout.LayoutParams.WRAP_CONTENT
             } else {
                 0
             }
             frame.layoutParams = frameParams
         }
+
         contentScrollView?.scrollTo(0, 0)
+
         if (view != null) {
             frame.addView(
                 view,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP
                 )
             )
