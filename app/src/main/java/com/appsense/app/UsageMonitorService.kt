@@ -130,6 +130,11 @@ class UsageMonitorService : Service() {
     private var isExpanded = false
     private var outsideTouchView: View? = null
     private var interventionOverlay: InterventionOverlay? = null
+    private var intentionOverlay: IntentionOverlay? = null
+    private var intentionOverride: IntentionSchedule? = null
+    private var intentionSelectedAtElapsedMs: Long = 0L
+    private var intentionPromptShownInSession: Boolean = false
+    private var pendingIntentionKind: IntentionKind? = null
 
     // Intervention reminders are based on the current continuous tracked-app session.
     // The first prompt appears at 15 minutes; later prompts are spaced 10 minutes apart.
@@ -267,6 +272,7 @@ class UsageMonitorService : Service() {
                 ?: emptySet()
 
         val interventionSettings = InterventionPreferences.read(this)
+        val intentionSettings = IntentionPreferences.read(this)
 
         val overlayAllowed = Settings.canDrawOverlays(this)
 
@@ -340,6 +346,12 @@ class UsageMonitorService : Service() {
                         interventionSettings.firstReminderMinutes * 60_000L
                     )
                     remindersInSession = 0
+
+                    // Intention choices and prompt state never carry into another session.
+                    intentionOverride = null
+                    intentionSelectedAtElapsedMs = 0L
+                    intentionPromptShownInSession = false
+                    pendingIntentionKind = null
                 }
 
                 cachedUsageAt = 0L
@@ -376,11 +388,34 @@ class UsageMonitorService : Service() {
 
         mainHandler.post {
 
-            val firstReminderMs =
-                interventionSettings.firstReminderMinutes * 60_000L
+            // A new session must never inherit the previous session's intention.
+            if (newSessionStarted) {
+                intentionOverride = null
+                intentionSelectedAtElapsedMs = 0L
+                intentionPromptShownInSession = false
+                pendingIntentionKind = null
+            }
 
-            val repeatReminderMs =
-                interventionSettings.repeatReminderMinutes * 60_000L
+            // Apply a selected intention to this session only.
+            val answeredKind = pendingIntentionKind
+            if (answeredKind != null) {
+                pendingIntentionKind = null
+                intentionOverride = when (answeredKind) {
+                    IntentionKind.BORED -> intentionSettings.bored
+                    IntentionKind.QUICK -> intentionSettings.quick
+                }
+                intentionSelectedAtElapsedMs = elapsed
+            }
+
+            val effectiveSchedule = IntentionScheduler.effective(
+                globalFirstMs = interventionSettings.firstReminderMinutes * 60_000L,
+                globalRepeatMs = interventionSettings.repeatReminderMinutes * 60_000L,
+                override = intentionOverride,
+                selectedAtElapsedMs = intentionSelectedAtElapsedMs
+            )
+
+            val firstReminderMs = effectiveSchedule.firstReminderMs
+            val repeatReminderMs = effectiveSchedule.repeatReminderMs
 
             if (newSessionStarted) {
                 nextReminderElapsedMs = firstReminderMs
@@ -430,6 +465,23 @@ class UsageMonitorService : Service() {
                 }
             }
 
+            // Ask once when a new tracked-app session begins.
+            if (
+                OpenCheckPolicy.shouldPrompt(
+                    enabled = intentionSettings.enabled,
+                    newSessionStarted = newSessionStarted,
+                    promptAlreadyShownThisSession = intentionPromptShownInSession,
+                    interventionActive = activeReminderType != null,
+                    interventionsAvailable =
+                        interventionSettings.interventionEnabled &&
+                                (interventionSettings.breathingEnabled || interventionSettings.gameEnabled),
+                    overlayAllowed = Settings.canDrawOverlays(this)
+                )
+            ) {
+                intentionPromptShownInSession = true
+                showIntentionPrompt(packageName, intentionSettings)
+            }
+
             // IMPORTANT:
             // Pill and intervention now use the SAME elapsed value.
             showFloatingTimer(elapsed, todayTotal)
@@ -450,6 +502,7 @@ class UsageMonitorService : Service() {
                 interventionSettings.interventionEnabled &&
                 anyInterventionTypeEnabled &&
                 activeReminderType == null &&
+                !isIntentionPromptShowing() &&
                 Settings.canDrawOverlays(this) &&
                 currentPackage == packageName
             ) {
@@ -1264,6 +1317,95 @@ class UsageMonitorService : Service() {
         }
     }
 
+    private fun isIntentionPromptShowing(): Boolean {
+        return intentionOverlay?.isShowing == true
+    }
+
+    private fun showIntentionPrompt(
+        packageName: String,
+        settings: IntentionSettings
+    ) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { showIntentionPrompt(packageName, settings) }
+            return
+        }
+
+        val appLabel = try {
+            packageManager.getApplicationLabel(
+                packageManager.getApplicationInfo(packageName, 0)
+            ).toString()
+        } catch (_: Exception) {
+            packageName
+        }
+
+        val overlay = intentionOverlay ?: IntentionOverlay(
+            this,
+            windowManager,
+            mainHandler
+        ).also {
+            intentionOverlay = it
+        }
+
+        requestInterventionAudioFocus()
+
+        overlay.show(
+            IntentionOverlay.Model(
+                appLabel = appLabel,
+                pauseSeconds = settings.pauseSeconds
+            ),
+            object : IntentionOverlay.Callbacks {
+                override fun onSelected(kind: IntentionKind) {
+                    pendingIntentionKind = kind
+                    dismissIntentionPrompt()
+                }
+
+                override fun onNotNow() {
+                    dismissIntentionPrompt()
+                    goHomeFromIntentionPrompt()
+                }
+
+                override fun onTimeout() {
+                    dismissIntentionPrompt()
+                }
+            }
+        )
+
+        if (!overlay.isShowing) {
+            abandonInterventionAudioFocus()
+        }
+    }
+
+    private fun dismissIntentionPrompt() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { dismissIntentionPrompt() }
+            return
+        }
+
+        val overlay = intentionOverlay ?: return
+        if (!overlay.isShowing) return
+
+        overlay.dismiss()
+        if (activeReminderType == null) {
+            abandonInterventionAudioFocus()
+        }
+    }
+
+    private fun goHomeFromIntentionPrompt() {
+        try {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(homeIntent)
+        } catch (_: Exception) {
+            Toast.makeText(
+                applicationContext,
+                "Couldn't open Home automatically. Press your phone's Home button.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     private fun updateOutsideTouchLayerTouchability() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post { updateOutsideTouchLayerTouchability() }
@@ -1342,6 +1484,8 @@ class UsageMonitorService : Service() {
             mainHandler.post { resetInterventionUi() }
             return
         }
+
+        dismissIntentionPrompt()
 
         if (!isExpanded && activeReminderType == null) {
             interventionOverlay?.dismiss()

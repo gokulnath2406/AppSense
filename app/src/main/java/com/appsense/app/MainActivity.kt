@@ -1053,6 +1053,10 @@ fun AppSenseApp() {
                     currentScreen = "dashboard"
                 }
 
+                "intention_settings" -> {
+                    currentScreen = "intervention_settings"
+                }
+
                 "add_app" -> {
                     currentScreen =
                         "dashboard"
@@ -1167,7 +1171,15 @@ fun AppSenseApp() {
         "intervention_settings" -> {
             InterventionSettingsScreen(
                 context = context,
-                onBack = { currentScreen = "dashboard" }
+                onBack = { currentScreen = "dashboard" },
+                onOpenIntention = { currentScreen = "intention_settings" }
+            )
+        }
+
+        "intention_settings" -> {
+            IntentionSettingsScreen(
+                context = context,
+                onBack = { currentScreen = "intervention_settings" }
             )
         }
     }
@@ -1196,10 +1208,15 @@ private fun InterventionMetric(label: String, value: Int) {
 @Composable
 fun InterventionSettingsScreen(
     context: Context,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenIntention: () -> Unit = {}
 ) {
     var settings by remember {
         mutableStateOf(InterventionPreferences.read(context))
+    }
+
+    var intentionSettings by remember {
+        mutableStateOf(IntentionPreferences.read(context))
     }
 
     var showTypeRequiredWarning by remember {
@@ -1218,6 +1235,11 @@ fun InterventionSettingsScreen(
             repeatReminderMinutes = next.repeatReminderMinutes.coerceIn(1, 120)
         )
         InterventionPreferences.write(context, settings)
+    }
+
+    fun updateIntentionEnabled(enabled: Boolean) {
+        intentionSettings = intentionSettings.copy(enabled = enabled).normalized()
+        IntentionPreferences.write(context, intentionSettings)
     }
 
     Box(
@@ -1344,6 +1366,17 @@ fun InterventionSettingsScreen(
                             color = Color(0xFFB3261E)
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    SettingsSwitchRow(
+                        title = "Ask why you're here?",
+                        subtitle = "Show a short intention prompt when you open a tracked app. Requires interventions to be enabled.",
+                        checked = intentionSettings.enabled,
+                        onCheckedChange = { enabled ->
+                            updateIntentionEnabled(enabled)
+                        }
+                    )
                 }
             }
 
@@ -1391,6 +1424,16 @@ fun InterventionSettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !invalidConfiguration,
+                onClick = onOpenIntention
+            ) {
+                Text("At-open question")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             Button(
                 modifier = Modifier.fillMaxWidth(),
