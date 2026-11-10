@@ -9,12 +9,6 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/**
- * Pure Kotlin analytics engine for AppSense.
- * - Uses only available data within the last 10 calendar days.
- * - Never fabricates or zero-pads missing days.
- * - Splits cross-hour and cross-midnight sessions accurately.
- */
 object SmartAnalyticsEngine {
 
     const val MAX_WINDOW_DAYS = 10
@@ -142,7 +136,6 @@ object SmartAnalyticsEngine {
             val dayOfWeek = cal.get(Calendar.DAY_OF_WEEK)
             val dateKey = dateFormat.format(Date(currentMs))
 
-            // Next exact hour boundary in local timezone
             cal.set(Calendar.MINUTE, 0)
             cal.set(Calendar.SECOND, 0)
             cal.set(Calendar.MILLISECOND, 0)
@@ -199,14 +192,16 @@ object SmartAnalyticsEngine {
             } else 0f
             val avgDailyForApp = if (activeDays > 0) appDuration / activeDays else 0L
 
-            val isConsistentHigh = availableDaysCount >= 1 &&
-                    dayPresenceRatio >= CONSISTENT_DAY_RATIO_THRESHOLD &&
-                    (percentage >= HIGH_USAGE_SHARE_THRESHOLD || avgDailyForApp >= HIGH_USAGE_DAILY_AVG_MS)
+            // Require either >= 2 active days OR >= 20m usage on day 1 so a 1-min test doesn't falsely badge as Consistent
+            val hasMeaningfulConsistency =
+                (availableDaysCount >= 2 && dayPresenceRatio >= CONSISTENT_DAY_RATIO_THRESHOLD &&
+                        (percentage >= HIGH_USAGE_SHARE_THRESHOLD || avgDailyForApp >= HIGH_USAGE_DAILY_AVG_MS)) ||
+                        (availableDaysCount == 1 && avgDailyForApp >= HIGH_USAGE_DAILY_AVG_MS)
 
             Triple(
                 pkg to appName,
                 appDuration to percentage,
-                Triple(activeDays, appScrolls, isConsistentHigh)
+                Triple(activeDays, appScrolls, hasMeaningfulConsistency)
             )
         }.sortedWith(
             compareByDescending<Triple<Pair<String, String>, Pair<Long, Float>, Triple<Int, Int, Boolean>>> {
@@ -253,8 +248,6 @@ object SmartAnalyticsEngine {
             )
         }
 
-        // Fix: Never start a peak window on an hour with 0 usage!
-        // Also tie-break by choosing the window whose starting hour has higher usage.
         var bestStartHour = (0..23).maxByOrNull { hourlyDuration[it] } ?: 0
         var bestWindowDuration = -1L
 
@@ -273,8 +266,6 @@ object SmartAnalyticsEngine {
         }
 
         val nextHourIndex = (bestStartHour + 1) % 24
-        // If the second hour in the 2-hour window has actual usage, show 2-hour window (e.g. 9 PM – 11 PM).
-        // If the second hour has 0 usage, show the exact 1-hour window (e.g. 9 PM – 10 PM) or 2-hour label.
         val peakEndHour = if (hourlyDuration[nextHourIndex] > 0L) {
             (bestStartHour + 2) % 24
         } else {
@@ -530,12 +521,11 @@ object SmartAnalyticsEngine {
     }
 
     /**
-     * Matches MainActivity's formatUsageTime so seconds are shown when < 1h,
-     * while keeping clean "Xh Ym" / "Xm" formatting when seconds == 0.
+     * Never returns "0s" for a positive sub-second duration (1..999ms).
      */
     fun formatDuration(durationMs: Long): String {
         if (durationMs <= 0L) return "0s"
-        val totalSeconds = durationMs / 1000L
+        val totalSeconds = ((durationMs + 500L) / 1000L).coerceAtLeast(1L)
         val hours = (totalSeconds / 3600L).toInt()
         val minutes = ((totalSeconds % 3600L) / 60L).toInt()
         val seconds = (totalSeconds % 60L).toInt()

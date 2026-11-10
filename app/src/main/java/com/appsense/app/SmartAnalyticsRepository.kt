@@ -7,10 +7,11 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.math.min
 
 /**
- * Uses AppSenseUsageCalculator (exact same engine as MainActivity Dashboard)
- * across the last 10 calendar days so hourly & daily timings match 100%.
+ * Uses AppSenseUsageCalculator across the last 10 calendar days and slices
+ * intervals at hour boundaries so per-hour usage and scroll telemetry are 100% accurate.
  */
 class SmartAnalyticsRepository(private val context: Context) {
 
@@ -21,17 +22,24 @@ class SmartAnalyticsRepository(private val context: Context) {
             context: Context,
             packageName: String,
             scrollDelta: Int = 1,
-            timestampMs: Long = System.currentTimeMillis()
+            timestampMs: Long = System.currentTimeMillis(),
+            timeZone: TimeZone = TimeZone.getDefault()
         ) {
             if (scrollDelta <= 0) return
             val prefs = context.getSharedPreferences(SCROLL_PREFS_NAME, Context.MODE_PRIVATE)
-            val bucketKey = buildHourKey(packageName, timestampMs)
+            val bucketKey = buildHourKey(packageName, timestampMs, timeZone)
             val current = prefs.getInt(bucketKey, 0)
             prefs.edit().putInt(bucketKey, current + scrollDelta).apply()
         }
 
-        private fun buildHourKey(packageName: String, timestampMs: Long): String {
-            val sdf = SimpleDateFormat("yyyy-MM-dd-HH", Locale.US)
+        private fun buildHourKey(
+            packageName: String,
+            timestampMs: Long,
+            timeZone: TimeZone
+        ): String {
+            val sdf = SimpleDateFormat("yyyy-MM-dd-HH", Locale.US).apply {
+                this.timeZone = timeZone
+            }
             return "${packageName}_${sdf.format(Date(timestampMs))}"
         }
     }
@@ -73,8 +81,8 @@ class SmartAnalyticsRepository(private val context: Context) {
         val appNameCache = mutableMapOf<String, String>()
         val consumedScrollKeys = mutableSetOf<String>()
         val sessions = mutableListOf<UsageSessionRecord>()
+        val cal = Calendar.getInstance(timeZone)
 
-        // Loop day-by-day for the last 10 calendar days (9 days ago .. today)
         for (dayOffset in (SmartAnalyticsEngine.MAX_WINDOW_DAYS - 1) downTo 0) {
             val dayStartCal = Calendar.getInstance(timeZone).apply {
                 timeInMillis = referenceTimeMs
@@ -109,24 +117,37 @@ class SmartAnalyticsRepository(private val context: Context) {
                 val appName = resolveAppName(pkg, appNameCache)
 
                 for (interval in intervals) {
-                    val start = maxOf(interval.startTime, dayStart)
+                    var cursor = maxOf(interval.startTime, dayStart)
                     val end = minOf(interval.endTime, dayEnd)
-                    if (end <= start) continue
+                    if (end <= cursor) continue
 
-                    val hourKey = buildHourKey(pkg, start)
-                    val scrolls = if (consumedScrollKeys.add(hourKey)) {
-                        scrollPrefs.getInt(hourKey, 0)
-                    } else 0
+                    // Slice at hour boundaries so cross-hour sessions pick up scrolls from every hour
+                    while (cursor < end) {
+                        cal.timeInMillis = cursor
+                        cal.set(Calendar.MINUTE, 0)
+                        cal.set(Calendar.SECOND, 0)
+                        cal.set(Calendar.MILLISECOND, 0)
+                        cal.add(Calendar.HOUR_OF_DAY, 1)
+                        val nextHourStart = min(end, cal.timeInMillis)
 
-                    sessions.add(
-                        UsageSessionRecord(
-                            packageName = pkg,
-                            appName = appName,
-                            startTimeMs = start,
-                            endTimeMs = end,
-                            scrollCount = scrolls
-                        )
-                    )
+                        if (nextHourStart > cursor) {
+                            val hourKey = buildHourKey(pkg, cursor, timeZone)
+                            val scrolls = if (consumedScrollKeys.add(hourKey)) {
+                                scrollPrefs.getInt(hourKey, 0)
+                            } else 0
+
+                            sessions.add(
+                                UsageSessionRecord(
+                                    packageName = pkg,
+                                    appName = appName,
+                                    startTimeMs = cursor,
+                                    endTimeMs = nextHourStart,
+                                    scrollCount = scrolls
+                                )
+                            )
+                        }
+                        cursor = nextHourStart
+                    }
                 }
             }
         }

@@ -449,7 +449,23 @@ private fun getDashboardUsageSnapshot(
         intervals.sumOf { it.endTime - it.startTime }
     }
 
-    val hourlyApps = packageNames.map { packageName ->
+    val palette = listOf(
+        Color(0xFF1769E0),
+        Color(0xFF8E44AD),
+        Color(0xFFE67E22),
+        Color(0xFF16A085),
+        Color(0xFFE74C3C),
+        Color(0xFF2E86C1),
+        Color(0xFFD4AC0D),
+        Color(0xFF7DCEA0)
+    )
+
+    // Sort apps by name and assign distinct palette colors by index (no hash collisions)
+    val sortedPackages = packageNames.sortedBy { pkg ->
+        (labelsByPackage[pkg]?.name ?: pkg).lowercase(Locale.getDefault())
+    }
+
+    val hourlyApps = sortedPackages.mapIndexed { index, packageName ->
         val buckets = LongArray(24)
 
         intervalsByPackage[packageName].orEmpty().forEach { interval ->
@@ -465,7 +481,7 @@ private fun getDashboardUsageSnapshot(
         DashboardHourlyAppUsage(
             packageName = packageName,
             appName = labelsByPackage[packageName]?.name ?: packageName,
-            color = getDashboardAppColor(packageName),
+            color = palette[index % palette.size],
             hourlyUsage = buckets
         )
     }
@@ -2461,8 +2477,21 @@ fun DashboardScreen(
                     val hourlyTotals = LongArray(24) { hour ->
                         dashboardHourlyData.sumOf { it.hourlyUsage[hour] }
                     }
-                    val maxHourUsage = hourlyTotals.maxOrNull() ?: 0L
+                    val maxHourUsage = (hourlyTotals.maxOrNull() ?: 0L).coerceAtLeast(1L)
                     val hourScrollState = rememberScrollState()
+                    val density = androidx.compose.ui.platform.LocalDensity.current
+
+                    val lastActiveHour = hourlyTotals.indexOfLast { it > 0L }
+                    val targetHour = if (lastActiveHour >= 0) {
+                        (lastActiveHour - 2).coerceAtLeast(0)
+                    } else {
+                        (today.get(Calendar.HOUR_OF_DAY) - 2).coerceAtLeast(0)
+                    }
+
+                    LaunchedEffect(lastActiveHour) {
+                        val stepPx = with(density) { 58.dp.roundToPx() }
+                        hourScrollState.animateScrollTo(targetHour * stepPx)
+                    }
 
                     Row(
                         modifier = Modifier
@@ -2473,54 +2502,77 @@ fun DashboardScreen(
                     ) {
                         hourlyTotals.forEachIndexed { hour, totalMillis ->
                             Column(
-                                modifier = Modifier.width(44.dp),
+                                modifier = Modifier.width(50.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Text(
-                                    text = if (totalMillis > 0L) {
-                                        formatUsageTime(totalMillis)
-                                    } else {
-                                        ""
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF737782),
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(18.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (totalMillis > 0L) {
+                                        val totalSec = ((totalMillis + 500L) / 1000L).coerceAtLeast(1L)
+                                        val h = totalSec / 3600L
+                                        val m = (totalSec % 3600L) / 60L
+                                        val s = totalSec % 60L
+                                        val compactLabel = when {
+                                            h > 0L && m > 0L -> "${h}h ${m}m"
+                                            h > 0L -> "${h}h"
+                                            m > 0L -> "${m}m"
+                                            else -> "${s}s"
+                                        }
+
+                                        Text(
+                                            text = compactLabel,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFF737782),
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                        )
+                                    }
+                                }
 
                                 Spacer(modifier = Modifier.height(5.dp))
 
-                                Box(
+                                Surface(
                                     modifier = Modifier
                                         .width(22.dp)
-                                        .height(112.dp)
-                                        .background(
-                                            Color(0xFFE9EBEF),
-                                            RoundedCornerShape(8.dp)
-                                        ),
-                                    contentAlignment = Alignment.BottomCenter
+                                        .height(112.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFFE9EBEF)
                                 ) {
-                                    if (totalMillis > 0L && maxHourUsage > 0L) {
-                                        Column(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            verticalArrangement = Arrangement.Bottom
-                                        ) {
-                                            dashboardHourlyData.forEach { app ->
-                                                val millis = app.hourlyUsage[hour]
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.BottomCenter
+                                    ) {
+                                        if (totalMillis > 0L) {
+                                            val totalBarFraction = (totalMillis.toFloat() / maxHourUsage.toFloat())
+                                                .coerceIn(0.07f, 1f)
+                                            val activeAppsInHour = dashboardHourlyData.filter {
+                                                it.hourlyUsage[hour] > 0L
+                                            }
 
-                                                if (millis > 0L) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .height(
-                                                                (112f *
-                                                                        (millis.toFloat() /
-                                                                                maxHourUsage.toFloat())
-                                                                            .coerceIn(0f, 1f)).dp
-                                                            )
-                                                            .background(app.color)
-                                                    )
+                                            Surface(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height((112f * totalBarFraction).dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = Color.Transparent
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.fillMaxSize()
+                                                ) {
+                                                    activeAppsInHour.forEach { app ->
+                                                        val appMillis = app.hourlyUsage[hour]
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .weight(appMillis.toFloat().coerceAtLeast(1f))
+                                                                .background(app.color)
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }

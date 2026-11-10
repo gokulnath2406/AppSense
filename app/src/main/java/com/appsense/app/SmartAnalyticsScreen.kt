@@ -808,7 +808,7 @@ private fun PeakUsageTimeCard(
  */
 private fun formatCompactBarLabel(durationMs: Long): String {
     if (durationMs <= 0L) return ""
-    val totalSeconds = durationMs / 1000L
+    val totalSeconds = ((durationMs + 500L) / 1000L).coerceAtLeast(1L)
     val hours = (totalSeconds / 3600L).toInt()
     val minutes = ((totalSeconds % 3600L) / 60L).toInt()
     val seconds = (totalSeconds % 60L).toInt()
