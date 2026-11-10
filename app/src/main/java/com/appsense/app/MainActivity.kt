@@ -10,11 +10,12 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,13 +28,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -65,12 +65,12 @@ import com.appsense.app.ui.theme.AppSenseTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import org.json.JSONArray
-import org.json.JSONObject
 
 data class AppItem(
     val name: String,
@@ -405,6 +405,7 @@ private data class DashboardHourlyAppUsage(
     val color: Color,
     val hourlyUsage: LongArray
 )
+
 private data class DashboardUsageSnapshot(
     val totalUsage: Long,
     val hourlyApps: List<DashboardHourlyAppUsage>
@@ -474,6 +475,7 @@ private fun getDashboardUsageSnapshot(
         hourlyApps = hourlyApps
     )
 }
+
 private fun getDashboardAppColor(packageName: String): Color {
     val palette = listOf(
         Color(0xFF1769E0),
@@ -622,9 +624,6 @@ fun AppSenseApp() {
         )
     }
 
-    // Android 13+ notification permission is optional for core tracking,
-    // but request it once before the splash so users are not dependent on
-    // the setup card remaining visible. Denial never blocks AppSense.
     val notificationPrefs = remember {
         context.getSharedPreferences("appsense_preferences", Context.MODE_PRIVATE)
     }
@@ -680,8 +679,6 @@ fun AppSenseApp() {
         )
     }
 
-    // Splash is shown only after the required
-    // permissions are available.
     var showSplash by remember {
         mutableStateOf(false)
     }
@@ -743,23 +740,6 @@ fun AppSenseApp() {
         }
     }
 
-    /*
-     * Splash flow:
-     *
-     * Usage Access
-     *      ↓
-     * Display over other apps
-     *      ↓
-     * Optional notification permission (Android 13+, once)
-     *      ↓
-     * AppSense splash
-     *      ↓
-     * Name dialog (first setup only)
-     *      ↓
-     * Dashboard
-     *
-     * Existing permissions and onboarding are preserved.
-     */
     LaunchedEffect(
         permissionGranted,
         overlayPermissionGranted,
@@ -780,7 +760,6 @@ fun AppSenseApp() {
                 !notificationPromptCompleted &&
                 !notificationPromptInFlight
             ) {
-                // Persist before launching so denial does not cause a prompt loop.
                 notificationPrefs.edit()
                     .putBoolean("notification_permission_prompted", true)
                     .apply()
@@ -796,19 +775,14 @@ fun AppSenseApp() {
             splashHandled = true
             showSplash = true
 
-            // Start the existing floating-timer monitor while
-            // the splash is showing, so it is ready when the
-            // dashboard/app usage flow begins.
             val serviceIntent =
                 Intent(
                     context,
                     UsageMonitorService::class.java
                 )
 
-            // minSdk is 26 (Android 8.0), so foreground-service API is available.
             context.startForegroundService(serviceIntent)
 
-            // Keep the splash short and smooth.
             delay(1800L)
 
             showSplash = false
@@ -816,18 +790,12 @@ fun AppSenseApp() {
         }
     }
 
-    // Keep first-time name onboarding independent from the splash delay.
-    // If rotation cancels the splash coroutine, this effect can still show the dialog.
     LaunchedEffect(splashHandled, showSplash, userName) {
         if (splashHandled && !showSplash && userName.isBlank()) {
             showNameDialog = true
         }
     }
 
-    /*
-     * Preload installed apps while the splash/dashboard
-     * flow is running, so Add Apps remains fast.
-     */
     LaunchedEffect(
         permissionGranted,
         overlayPermissionGranted
@@ -1008,8 +976,6 @@ fun AppSenseApp() {
                             )
                             .apply()
 
-                        // Update Compose state immediately so the dashboard
-                        // shows the name without requiring an app restart.
                         userName = finalName
                         showNameDialog = false
                     }
@@ -1040,6 +1006,11 @@ fun AppSenseApp() {
                 }
 
                 "stats" -> {
+                    currentScreen =
+                        "dashboard"
+                }
+
+                "smart_analytics" -> {
                     currentScreen =
                         "dashboard"
                 }
@@ -1095,6 +1066,10 @@ fun AppSenseApp() {
 
                 onInterventionSettings = {
                     currentScreen = "intervention_settings"
+                },
+
+                onSmartAnalytics = {
+                    currentScreen = "smart_analytics"
                 }
             )
         }
@@ -1180,6 +1155,13 @@ fun AppSenseApp() {
             IntentionSettingsScreen(
                 context = context,
                 onBack = { currentScreen = "intervention_settings" }
+            )
+        }
+
+        "smart_analytics" -> {
+            SmartAnalyticsScreen(
+                selectedPackages = loadSelectedApps(context),
+                onBackClick = { currentScreen = "dashboard" }
             )
         }
     }
@@ -1888,8 +1870,6 @@ fun PermissionSetupScreen(
             modifier = Modifier.fillMaxWidth(),
             enabled = allGranted,
             onClick = {
-                // AppSenseApp automatically continues when both
-                // permissions are detected.
             }
         ) {
             Text(
@@ -1986,15 +1966,14 @@ fun DashboardScreen(
     onStats: () -> Unit,
     onNameChanged: (String) -> Unit,
     onGoals: () -> Unit,
-    onInterventionSettings: () -> Unit
+    onInterventionSettings: () -> Unit,
+    onSmartAnalytics: () -> Unit = {}
 ) {
 
     val selectedApps = remember {
         loadSelectedApps(context)
     }
 
-    // Keep the dashboard date fresh when the Activity returns to the foreground,
-    // especially when the app remains alive across midnight.
     var today by remember {
         mutableStateOf(Calendar.getInstance())
     }
@@ -2282,6 +2261,8 @@ fun DashboardScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(16.dp))
+
             // -------------------------------------------------
             // TODAY'S INTERVENTION LOG
             // -------------------------------------------------
@@ -2398,6 +2379,53 @@ fun DashboardScreen(
                     text = "Manage tracked apps",
                     style = MaterialTheme.typography.titleMedium
                 )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // -------------------------------------------------
+            // SMART USAGE INTELLIGENCE / STATS >
+            // -------------------------------------------------
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSmartAnalytics() },
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 1.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "SMART USAGE INTELLIGENCE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF858993)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "10-Day Analytics & Smart Insights",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color(0xFF16181D)
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFE8EEFF)
+                    ) {
+                        Text(
+                            text = "Stats >",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color(0xFF1769E0)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(18.dp))
@@ -3300,7 +3328,6 @@ fun AppDetailScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Date selector — original functionality retained.
         OutlinedButton(
             modifier = Modifier.fillMaxWidth(),
             onClick = { showCalendar = true }
@@ -3315,7 +3342,6 @@ fun AppDetailScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Daily / Hourly selector — original functionality retained.
         Box(modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
@@ -3347,7 +3373,6 @@ fun AppDetailScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Keep the original Daily / Hourly data views.
         if (mode == "Daily") {
             DailyDetail(
                 context = context,
